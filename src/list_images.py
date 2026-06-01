@@ -4,7 +4,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from image_io import ImageLoadError, load_image
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 
@@ -41,12 +41,12 @@ def main() -> int:
 
     for path in images:
         try:
-            with Image.open(path) as img:
-                img.load()
-                width, height = img.size
-                channels = len(img.getbands())
-        except (UnidentifiedImageError, OSError) as exc:
-            print(f"Warning: Failed to read {path.name}: {exc}", file=sys.stderr)
+            img = load_image(path)
+            width, height = img.size
+            channels = len(img.getbands())
+            img.close()
+        except ImageLoadError as exc:
+            print(f"Warning: {exc}", file=sys.stderr)
             continue
 
         print(f"{path.name}\t{width}x{height}\t{channels}")

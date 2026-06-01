@@ -18,3 +18,4 @@ env/
 # logs / outputs
 outputs/
 logs/
+data/images_backup/

@@ -39,3 +39,9 @@ Preprocess a single image and save grayscale and binary outputs to `outputs/`
 ```
 python src/preprocess.py data/images/meter_0001.jpg
 ```
+
+Optional parameters:
+
+```
+python src/preprocess.py data/images/meter_0001.jpg --threshold 140 --resize 0.5 --debug
+```

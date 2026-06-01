@@ -16,3 +16,18 @@ Apply changes:
 ```
 python scripts/rename_images.py --apply
 ```
+
+## List images
+`data/images/` is ignored by Git, so place image files there locally before running.
+The script lists each file name, image size, and channel count.
+
+Requires Pillow via the conda environment defined in `environment.yml`:
+
+```
+conda env create -f environment.yml
+conda activate meter_reader
+```
+
+```
+python src/list_images.py
+```

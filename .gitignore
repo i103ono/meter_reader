@@ -1,0 +1,20 @@
+# local data
+data/
+images/
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+
+# logs / outputs
+outputs/
+logs/

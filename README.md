@@ -31,3 +31,11 @@ conda activate meter_reader
 ```
 python src/list_images.py
 ```
+
+## Preprocess image
+Preprocess a single image and save grayscale and binary outputs to `outputs/`
+(ignored by Git).
+
+```
+python src/preprocess.py data/images/meter_0001.jpg
+```

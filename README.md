@@ -45,3 +45,18 @@ Optional parameters:
 ```
 python src/preprocess.py data/images/meter_0001.jpg --threshold 140 --resize 0.5 --debug
 ```
+
+## OCR test
+Run OCR on a single image (requires `pytesseract` and `tesseract` in
+`environment.yml`).
+
+```
+python src/ocr_test.py data/images/meter_0001.jpg
+```
+
+Digits-only with PSM:
+
+```
+python src/preprocess.py data/images/meter_0001.jpg
+python src/ocr_test.py outputs/meter_0001_binary.png --psm 7 --digits-only
+```

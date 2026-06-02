@@ -60,3 +60,17 @@ Digits-only with PSM:
 python src/preprocess.py data/images/meter_0001.jpg
 python src/ocr_test.py outputs/meter_0001_binary.png --psm 7 --digits-only
 ```
+
+## Crop ROI for OCR
+Crop a numeric display region and run OCR on the cropped image.
+
+```
+python src/crop_roi.py data/images/meter_0005.jpg --roi 100 200 300 120 --output outputs/meter_0005_roi.png
+python src/ocr_test.py outputs/meter_0005_roi.png --psm 7 --digits-only
+```
+
+Select the crop region with the mouse:
+
+```
+python src/crop_roi.py data/images/meter_0005.jpg --interactive --output outputs/meter_0005_roi.png
+```

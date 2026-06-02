@@ -74,3 +74,10 @@ Select the crop region with the mouse:
 ```
 python src/crop_roi.py data/images/meter_0005.jpg --interactive --output outputs/meter_0005_roi.png
 ```
+
+## Parse OCR reading
+Extract a value and unit from OCR text.
+
+```
+python src/parse_reading.py "l23.O kWh"
+```

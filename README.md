@@ -95,3 +95,10 @@ Crop an analog meter region for later processing.
 python src/detect_meter_region.py data/images/meter_0005.jpg --roi 100 200 300 300
 python src/detect_meter_region.py data/images/meter_0005.jpg --interactive --output outputs/meter_0005_meter_region.png
 ```
+
+## Detect Dial
+Detect a circular analog meter dial and save a debug image.
+
+```
+python src/detect_dial.py outputs/meter_0005_meter_region.png --min-radius 20
+```

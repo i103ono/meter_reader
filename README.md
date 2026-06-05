@@ -130,3 +130,11 @@ Detect the dial and needle, then convert the needle angle to a value.
 ```
 python src/read_analog_meter.py outputs/meter_0001_meter_region.png --min-value 0 --max-value 70 --unit MPa
 ```
+
+## Read Meter
+Use one CLI for digital or analog meters.
+
+```
+python src/read_meter.py outputs/meter_0001_meter_region.png --type digital --digits-only
+python src/read_meter.py outputs/meter_0005_meter_region.png --type analog --min-value 0 --max-value 70 --unit MPa
+```

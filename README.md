@@ -102,3 +102,10 @@ Detect a circular analog meter dial and save a debug image.
 ```
 python src/detect_dial.py outputs/meter_0005_meter_region.png --min-radius 20
 ```
+
+## Detect Needle
+Detect analog meter needle candidates and estimate angle.
+
+```
+python src/detect_needle.py data/images/meter_0005.jpg --center-x 1867 --center-y 2114 --radius 1043
+```

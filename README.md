@@ -109,3 +109,17 @@ Detect analog meter needle candidates and estimate angle.
 ```
 python src/detect_needle.py data/images/meter_0005.jpg --center-x 1867 --center-y 2114 --radius 1043
 ```
+
+## Analog Calibration
+Convert a needle angle to a meter value.
+
+```
+python src/analog_calibration.py --angle 223.2 --min-value 0 --max-value 70 --min-angle 225 --max-angle 345 --direction counterclockwise
+```
+
+Angles near the min/max endpoints on the same vertical half are clamped to the
+endpoint value. The default tolerance is 5 degrees.
+
+```
+python src/analog_calibration.py --angle 223.2 --min-value 0 --max-value 70 --min-angle 225 --max-angle 345 --direction counterclockwise --endpoint-tolerance 0
+```

@@ -138,3 +138,12 @@ Use one CLI for digital or analog meters.
 python src/read_meter.py outputs/meter_0001_meter_region.png --type digital --digits-only
 python src/read_meter.py outputs/meter_0005_meter_region.png --type analog --min-value 0 --max-value 70 --unit MPa
 ```
+
+## Batch Read
+Process images in `data/images/` in filename order and save `outputs/results.csv`.
+
+```
+python src/batch_read.py --type digital --digits-only
+python src/batch_read.py --type analog --min-value 0 --max-value 70 --unit MPa
+python src/batch_read.py --type digital --digits-only --canvas-size 960 --limit 5
+```

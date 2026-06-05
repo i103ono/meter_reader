@@ -123,3 +123,10 @@ endpoint value. The default tolerance is 5 degrees.
 ```
 python src/analog_calibration.py --angle 223.2 --min-value 0 --max-value 70 --min-angle 225 --max-angle 345 --direction counterclockwise --endpoint-tolerance 0
 ```
+
+## Read Analog Meter
+Detect the dial and needle, then convert the needle angle to a value.
+
+```
+python src/read_analog_meter.py outputs/meter_0001_meter_region.png --min-value 0 --max-value 70 --unit MPa
+```

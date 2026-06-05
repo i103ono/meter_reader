@@ -6,6 +6,7 @@ dependencies:
   - opencv
   - numpy
   - pillow
-  - pytesseract
-  - tesseract
   - matplotlib
+  - pip
+  - pip:
+      - easyocr

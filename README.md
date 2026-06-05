@@ -47,14 +47,13 @@ python src/preprocess.py data/images/meter_0001.jpg --threshold 140 --resize 0.5
 ```
 
 ## OCR test
-Run OCR on a single image (requires `pytesseract` and `tesseract` in
-`environment.yml`).
+Run EasyOCR on a single image (requires `easyocr` in `environment.yml`).
 
 ```
 python src/ocr_test.py data/images/meter_0001.jpg
 ```
 
-Digits-only with PSM:
+Digits-only:
 
 ```
 python src/preprocess.py data/images/meter_0001.jpg
@@ -80,4 +79,11 @@ Extract a value and unit from OCR text.
 
 ```
 python src/parse_reading.py "l23.O kWh"
+```
+
+## Read digital meter
+Run OCR and extract a value from one image.
+
+```
+python src/read_digital_meter.py data/images/meter_0005.jpg --psm 7 --digits-only
 ```

@@ -87,3 +87,11 @@ Run OCR and extract a value from one image.
 ```
 python src/read_digital_meter.py data/images/meter_0005.jpg --psm 7 --digits-only
 ```
+
+## Detect Meter Region
+Crop an analog meter region for later processing.
+
+```
+python src/detect_meter_region.py data/images/meter_0005.jpg --roi 100 200 300 300
+python src/detect_meter_region.py data/images/meter_0005.jpg --interactive --output outputs/meter_0005_meter_region.png
+```

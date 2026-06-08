@@ -139,6 +139,17 @@ python src/read_meter.py outputs/meter_0001_meter_region.png --type digital --di
 python src/read_meter.py outputs/meter_0005_meter_region.png --type analog --min-value 0 --max-value 70 --unit MPa
 ```
 
+## Meter Agent
+Estimate meter settings with OpenAI Vision. Digital values are read from the API
+response, and analog values are read by the local needle detector using the
+AI-estimated settings.
+Create `.env` in the repository root and set `OPENAI_API_KEY` before running.
+
+```
+python src/meter_agent.py data/images/meter_0005.jpg --digits-only
+python src/meter_agent.py data/images/meter_0001.jpg
+```
+
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.
 

@@ -2,6 +2,11 @@
 data/
 images/
 
+# secrets
+.env
+.env.*
+!.env.example
+
 # Python
 __pycache__/
 *.py[cod]

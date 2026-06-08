@@ -150,6 +150,13 @@ python src/meter_agent.py data/images/meter_0005.jpg --digits-only
 python src/meter_agent.py data/images/meter_0001.jpg
 ```
 
+Check representative digital and analog images and print CSV results:
+
+```
+python src/test_meter_agent.py --limit 2
+python src/test_meter_agent.py --mock --limit 2
+```
+
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.
 

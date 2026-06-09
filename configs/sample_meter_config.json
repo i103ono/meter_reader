@@ -1,0 +1,10 @@
+{
+  "meter_type": "analog",
+  "roi": [230, 130, 390, 390],
+  "unit": "MPa",
+  "min_value": 0,
+  "max_value": 70,
+  "min_angle": 225,
+  "max_angle": 345,
+  "direction": "counterclockwise"
+}

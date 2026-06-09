@@ -157,6 +157,29 @@ python src/test_meter_agent.py --limit 2
 python src/test_meter_agent.py --mock --limit 2
 ```
 
+## Meter Config JSON
+Meter settings can be stored in `configs/*.json`. The format is used for
+AI-estimated or manually adjusted settings.
+
+Example:
+
+```
+configs/sample_meter_config.json
+```
+
+Fields:
+
+- `meter_type`: required, `digital` or `analog`
+- `roi`: optional, `[x, y, width, height]` in original image pixels, or `null`
+- `unit`: optional display unit, such as `m3` or `MPa`
+- `min_value`, `max_value`: required for analog meters, optional for digital meters
+- `min_angle`, `max_angle`: optional analog calibration angles in degrees
+- `direction`: optional analog scale direction, `clockwise` or `counterclockwise`
+
+Missing optional fields should be treated as defaults by the script that reads the
+config. Missing required fields or invalid values should produce a clear `Error: ...`
+message instead of a traceback.
+
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.
 

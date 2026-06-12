@@ -193,6 +193,12 @@ python -m json.tool --no-ensure-ascii configs/meter_0005.json
 
 Omit `--output` to print the JSON without saving a file.
 
+Apply `roi` from a config and save the cropped image under `outputs/`:
+
+```
+python src/apply_meter_config.py data/images/meter_0001.jpg configs/sample_meter_config.json
+```
+
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.
 

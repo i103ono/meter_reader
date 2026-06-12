@@ -180,6 +180,12 @@ Missing optional fields should be treated as defaults by the script that reads t
 config. Missing required fields or invalid values should produce a clear `Error: ...`
 message instead of a traceback.
 
+Suggest a config as JSON with OpenAI Vision:
+
+```
+python src/suggest_meter_config.py data/images/meter_0005.jpg
+```
+
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.
 

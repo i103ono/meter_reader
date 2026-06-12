@@ -1,12 +1,14 @@
 {
+  "meter_count": 1,
+  "error": null,
   "meter_type": "digital",
   "roi": [
-    142,
-    91,
-    178,
-    55
+    200,
+    170,
+    336,
+    126
   ],
-  "raw_text": "040731 m³",
+  "raw_text": "040731 m³ 0.0 m³/h .3",
   "value": 40731,
   "unit": "m³",
   "min_value": null,
@@ -14,6 +16,6 @@
   "min_angle": null,
   "max_angle": null,
   "direction": null,
-  "confidence": 0.95,
-  "notes": "The meter displays a clear digital reading of 040731 cubic meters."
+  "confidence": 0.98,
+  "notes": "Digital gas meter reading shown in cubic meters with additional small flow rate display."
 }

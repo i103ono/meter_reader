@@ -222,3 +222,9 @@ In `--config-dir` mode, digital readings use the AI-generated `value`, `raw_text
 `unit`, and `confidence` from each config without running local OCR.
 Analog readings use the AI-generated meter type, unit, and min/max values, then run
 the local dial and needle detector on the original image.
+
+Suggest configs and read the images in one command:
+
+```
+python src/batch_meter_agent.py --limit 5
+```

@@ -184,7 +184,11 @@ Suggest a config as JSON with OpenAI Vision:
 
 ```
 python src/suggest_meter_config.py data/images/meter_0005.jpg
+python src/suggest_meter_config.py data/images/meter_0005.jpg --output configs/meter_0005.json
+python -m json.tool --no-ensure-ascii configs/meter_0005.json
 ```
+
+Omit `--output` to print the JSON without saving a file.
 
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.

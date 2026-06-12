@@ -199,6 +199,15 @@ Apply `roi` from a config and save the cropped image under `outputs/`:
 python src/apply_meter_config.py data/images/meter_0001.jpg configs/sample_meter_config.json
 ```
 
+Suggest configs for images in filename order:
+
+```
+python src/batch_suggest_configs.py --limit 5
+```
+
+Configs are saved under `configs/`; failures are recorded in
+`outputs/config_suggestion_errors.csv`.
+
 ## Batch Read
 Process images in `data/images/` in filename order and save `outputs/results.csv`.
 

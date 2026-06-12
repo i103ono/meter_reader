@@ -1,10 +1,10 @@
 {
   "meter_type": "digital",
   "roi": [
-    80,
-    70,
-    215,
-    70
+    142,
+    91,
+    178,
+    55
   ],
   "raw_text": "040731 m³",
   "value": 40731,
@@ -15,5 +15,5 @@
   "max_angle": null,
   "direction": null,
   "confidence": 0.95,
-  "notes": "The digital numeric reading is clearly displayed as 040731 cubic meters on the main display area."
+  "notes": "The meter displays a clear digital reading of 040731 cubic meters."
 }

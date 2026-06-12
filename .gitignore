@@ -24,3 +24,5 @@ env/
 outputs/
 logs/
 data/images_backup/
+
+configs/

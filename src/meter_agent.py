@@ -107,17 +107,31 @@ def build_prompt() -> str:
     return (
         "You are helping configure a meter-reading CLI. Inspect the image and return "
         "only a JSON object. Do not wrap it in markdown. The JSON schema is: "
-        '{"meter_type":"digital|analog","roi":[x,y,w,h] or null,'
+        '{"meter_count":integer,"error":string or null,'
+        '"meter_type":"digital|analog" or null,"roi":[x,y,w,h] or null,'
         '"raw_text":string,"value":number or null,'
         '"unit":string,"min_value":number or null,"max_value":number or null,'
         '"min_angle":number or null,"max_angle":number or null,'
         '"direction":"clockwise|counterclockwise" or null,'
         '"confidence":number between 0 and 1,"notes":string}. '
+        "Count the visible meters before estimating settings or readings. "
+        "The image must contain exactly one meter. If no meter is visible, set "
+        'meter_count to 0, set error to "No meter detected. Retake the image with '
+        'one meter clearly visible.", and set all meter settings and value to null. '
+        "If more than one meter is visible, do not select or read any of them. Set "
+        "meter_count to the number of visible meters, set error to "
+        '"Multiple meters detected. Retake the image with only one meter visible.", '
+        "and set meter_type, roi, value, unit, min_value, max_value, min_angle, "
+        "max_angle, and direction to null. Never guess which meter the user intended "
+        "to read. Only estimate settings and value when meter_count is exactly 1. "
+        "When exactly one meter is visible, set error to null. "
         "Use roi for the main display or dial region in original image pixels. "
         "For digital meters, read the main numeric display directly from the image, "
         "set raw_text to the visible reading text, and set value to the numeric reading. "
         "For analog meters, estimate the needle reading directly from the image by "
         "looking at the thin measuring pointer, tick marks, scale labels, and unit. "
+        "The measuring pointer may be black, white, red, orange, or another color; "
+        "do not assume that the darkest line is the pointer. "
         "If the needle has a wide triangular hub or counterweight, do not use that "
         "wide part as the reading direction; use the thin pointer end that indicates "
         "the scale value. Also estimate min_value and max_value from visible scale "
@@ -207,11 +221,23 @@ def extract_response_text(data: dict[str, Any]) -> str:
 
 
 def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
+    meter_count = config.get("meter_count")
+    if meter_count is not None:
+        if isinstance(meter_count, bool) or not isinstance(meter_count, int):
+            raise AgentError("meter_count must be an integer.")
+        if meter_count != 1:
+            error = config.get("error")
+            if isinstance(error, str) and error.strip():
+                raise AgentError(error.strip())
+            raise AgentError("The image must contain exactly one meter.")
+
     meter_type = config.get("meter_type")
     if meter_type not in ("digital", "analog"):
         raise AgentError("meter_type must be 'digital' or 'analog'.")
 
     normalized: dict[str, Any] = {
+        "meter_count": 1 if meter_count is None else meter_count,
+        "error": None,
         "meter_type": meter_type,
         "roi": config.get("roi"),
         "raw_text": str(config.get("raw_text") or ""),

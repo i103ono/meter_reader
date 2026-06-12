@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import math
 import sys
@@ -16,6 +17,7 @@ from easyocr_engine import OcrError, read_text
 from image_io import ImageLoadError, load_image
 from parse_reading import parse_reading
 from read_analog_meter import detect_dial, detect_needle, resolve_debug_output, save_debug
+from read_meter import apply_config, load_config
 
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png"}
@@ -48,8 +50,13 @@ def parse_args() -> argparse.Namespace:
         default=str(Path(__file__).resolve().parents[1] / "outputs" / "results.csv"),
         help="Output CSV path. Default: outputs/results.csv",
     )
-    parser.add_argument("--type", choices=("digital", "analog"), required=True)
-    parser.add_argument("--unit", default="")
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--type", choices=("digital", "analog"))
+    mode_group.add_argument(
+        "--config-dir",
+        help="Directory containing <image_stem>.json config files.",
+    )
+    parser.add_argument("--unit")
     parser.add_argument("--digits-only", action="store_true")
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument(
@@ -60,12 +67,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--min-value", type=float)
     parser.add_argument("--max-value", type=float)
-    parser.add_argument("--min-angle", type=float, default=225.0)
-    parser.add_argument("--max-angle", type=float, default=345.0)
+    parser.add_argument("--min-angle", type=float)
+    parser.add_argument("--max-angle", type=float)
     parser.add_argument(
         "--direction",
         choices=("clockwise", "counterclockwise"),
-        default="counterclockwise",
     )
     parser.add_argument("--endpoint-tolerance", type=float, default=5.0)
     parser.add_argument("--dial-min-radius", type=int, default=20)
@@ -111,9 +117,34 @@ def read_digital_row(path: Path, args: argparse.Namespace) -> dict[str, str]:
 
     row["status"] = "ok"
     row["value"] = f"{reading.value:g}"
-    row["unit"] = reading.unit or ""
+    row["unit"] = args.unit or reading.unit or ""
     row["raw_text"] = raw_text
     if confidence is not None:
+        row["confidence"] = f"{confidence:.3f}"
+    return row
+
+
+def read_config_digital_row(
+    path: Path,
+    config: dict[str, object],
+) -> dict[str, str]:
+    row = empty_row(path.name, "digital")
+    value = config.get("value")
+    if value is None or value == "":
+        row["status"] = "error"
+        row["error"] = "Digital config does not contain value."
+        return row
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        row["status"] = "error"
+        row["error"] = "Digital config value must be a number."
+        return row
+
+    row["status"] = "ok"
+    row["value"] = f"{value:g}"
+    row["unit"] = str(config.get("unit") or "")
+    row["raw_text"] = str(config.get("raw_text") or "")
+    confidence = config.get("confidence")
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
         row["confidence"] = f"{confidence:.3f}"
     return row
 
@@ -182,11 +213,45 @@ def validate_args(args: argparse.Namespace) -> str | None:
         return "--limit must be greater than 0."
     if args.canvas_size <= 0:
         return "--canvas-size must be greater than 0."
+    if args.config_dir:
+        config_dir = Path(args.config_dir).expanduser()
+        if not config_dir.exists():
+            return f"Config directory not found: {config_dir}"
+        if not config_dir.is_dir():
+            return f"Config path is not a directory: {config_dir}"
     for name in ("min_value", "max_value", "min_angle", "max_angle", "endpoint_tolerance"):
         value = getattr(args, name)
         if value is not None and not math.isfinite(value):
             return f"--{name.replace('_', '-')} must be a finite number."
     return None
+
+
+def apply_legacy_defaults(args: argparse.Namespace) -> None:
+    args.unit = args.unit or ""
+    args.min_angle = 225.0 if args.min_angle is None else args.min_angle
+    args.max_angle = 345.0 if args.max_angle is None else args.max_angle
+    args.direction = args.direction or "counterclockwise"
+
+
+def config_args(
+    base_args: argparse.Namespace,
+    config_path: Path,
+) -> tuple[argparse.Namespace, dict[str, object]]:
+    args = copy.copy(base_args)
+    args.type = None
+    args.unit = None
+    args.min_value = None
+    args.max_value = None
+    args.min_angle = None
+    args.max_angle = None
+    args.direction = None
+    config = load_config(config_path)
+    apply_config(args, config)
+    if args.type == "analog":
+        args.min_angle = 225.0
+        args.max_angle = 345.0
+        args.direction = "counterclockwise"
+    return args, config
 
 
 def main() -> int:
@@ -204,13 +269,34 @@ def main() -> int:
         print("No matching image files found.")
         return 0
 
+    if not args.config_dir:
+        apply_legacy_defaults(args)
+
     rows = []
     for index, path in enumerate(images, start=1):
         print(f"Processing {index}/{len(images)}: {path.name}", flush=True)
-        if args.type == "digital":
-            rows.append(read_digital_row(path, args))
+        process_path = path
+        process_args = args
+        if args.config_dir:
+            config_path = Path(args.config_dir).expanduser() / f"{path.stem}.json"
+            try:
+                process_args, config = config_args(args, config_path)
+                if process_args.type == "digital":
+                    rows.append(read_config_digital_row(path, config))
+                    continue
+            except ValueError as exc:
+                row = empty_row(path.name, "")
+                row["status"] = "error"
+                row["error"] = str(exc)
+                rows.append(row)
+                continue
+
+        if process_args.type == "digital":
+            row = read_digital_row(process_path, process_args)
         else:
-            rows.append(read_analog_row(path, args))
+            row = read_analog_row(process_path, process_args)
+        row["filename"] = path.name
+        rows.append(row)
 
     output_path = Path(args.output).expanduser()
     try:

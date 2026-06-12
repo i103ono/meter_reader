@@ -215,4 +215,10 @@ Process images in `data/images/` in filename order and save `outputs/results.csv
 python src/batch_read.py --type digital --digits-only
 python src/batch_read.py --type analog --min-value 0 --max-value 70 --unit MPa
 python src/batch_read.py --type digital --digits-only --canvas-size 960 --limit 5
+python src/batch_read.py --config-dir configs --limit 5
 ```
+
+In `--config-dir` mode, digital readings use the AI-generated `value`, `raw_text`,
+`unit`, and `confidence` from each config without running local OCR.
+Analog readings use the AI-generated meter type, unit, and min/max values, then run
+the local dial and needle detector on the original image.

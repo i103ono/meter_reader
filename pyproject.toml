@@ -1,0 +1,16 @@
+[project]
+name = "meter-reader"
+version = "0.1.0"
+description = "Read digital and analog meters from images."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "easyocr",
+    "matplotlib",
+    "numpy",
+    "opencv-python",
+    "pillow",
+]
+
+[tool.uv]
+package = false

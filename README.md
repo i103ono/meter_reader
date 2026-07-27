@@ -34,12 +34,48 @@ AIを使う処理では画像がOpenAI APIへ送信されます。ローカル�
 
 ## セットアップ
 
+Condaまたはuvのどちらかを使用できます。同じ作業ディレクトリで両方の環境を同時に有効化せず、利用する環境を一つに決めてください。
+
+### uvを使う場合
+
+uvが未導入の場合は、[uv公式のインストール手順](https://docs.astral.sh/uv/getting-started/installation/)に従ってインストールします。macOSではHomebrewも利用できます。
+
+```bash
+brew install uv
+```
+
+リポジトリ直下で依存関係を同期します。`.python-version`に従ってPython 3.11と`.venv`が用意されます。
+
+```bash
+uv sync
+```
+
+コマンドは`uv run`経由で実行できます。仮想環境を手動で有効化する必要はありません。
+
+```bash
+uv run python src/meter_agent.py data/images/meter_0001.jpg
+uv run python src/evaluate.py
+```
+
+または、従来どおり`.venv`を有効化して`python`を実行します。
+
+```bash
+source .venv/bin/activate
+python src/meter_agent.py data/images/meter_0001.jpg
+```
+
+`pyproject.toml`を変更した場合は、再度`uv sync`を実行してください。`uv.lock`がある場合は、CIなどで`uv sync --locked`を使用すると、ロックファイルを更新せずに環境を再現できます。
+
+### Condaを使う場合
+
 Conda環境を作成して有効化します。
 
 ```bash
 conda env create -f environment.yml
 conda activate meter_reader
 ```
+
+### APIキーの設定
 
 AI推定を使う場合は、`.env.example`を参考にリポジトリ直下へ`.env`を作成します。
 
@@ -257,6 +293,8 @@ meter_reader/
 ├── outputs/       # 結果CSV、切り出し、デバッグ画像（Git管理外）
 ├── scripts/       # 画像名変更などの補助スクリプト
 ├── src/           # 読取・評価プログラム
+├── pyproject.toml # uv用の依存関係
+├── uv.lock        # uvが生成する依存関係のロックファイル
 ├── .env.example   # APIキー設定例
 └── environment.yml
 ```

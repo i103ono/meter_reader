@@ -111,6 +111,7 @@ def build_prompt() -> str:
         '"meter_type":"digital|analog" or null,"roi":[x,y,w,h] or null,'
         '"raw_text":string,"value":number or null,'
         '"unit":string,"min_value":number or null,"max_value":number or null,'
+        '"displayed_max_value":number or null,"scale_multiplier":number or null,'
         '"min_angle":number or null,"max_angle":number or null,'
         '"direction":"clockwise|counterclockwise" or null,'
         '"confidence":number between 0 and 1,"notes":string}. '
@@ -122,7 +123,8 @@ def build_prompt() -> str:
         "meter_count to the number of visible meters, set error to "
         '"Multiple meters detected. Retake the image with only one meter visible.", '
         "and set meter_type, roi, value, unit, min_value, max_value, min_angle, "
-        "max_angle, and direction to null. Never guess which meter the user intended "
+        "max_angle, direction, displayed_max_value, and scale_multiplier to null. "
+        "Never guess which meter the user intended "
         "to read. Only estimate settings and value when meter_count is exactly 1. "
         "When exactly one meter is visible, set error to null. "
         "Use roi for the main display or dial region in original image pixels. "
@@ -137,6 +139,17 @@ def build_prompt() -> str:
         "the scale value. Also estimate min_value and max_value from visible scale "
         "labels. For analog roi, include the whole circular dial and outer rim, not "
         "only the center hub, label text, or needle base. "
+        "Inspect the entire analog dial for scale multipliers such as x0.1, x0.01, "
+        "x10, or scientific notation. Do not use the largest printed scale number as "
+        "max_value until all multiplier labels have been checked. Set "
+        "displayed_max_value to the largest printed scale number and "
+        "scale_multiplier to the detected multiplier. Apply the multiplier to "
+        "min_value, max_value, and value. For example, if the printed scale is 0 to "
+        "10 and the dial shows x0.1, return displayed_max_value as 10, "
+        "scale_multiplier as 0.1, and max_value as 1.0. Record the multiplier in "
+        "notes. If both 1.0 and 10 are visible, determine which is a scale label, "
+        "multiplier, or secondary scale. If the multiplier cannot be identified "
+        "confidently, set min_value, max_value, and value to null instead of guessing. "
         "If a value cannot be estimated, use null."
     )
 
@@ -245,6 +258,8 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
         "unit": str(config.get("unit") or ""),
         "min_value": config.get("min_value"),
         "max_value": config.get("max_value"),
+        "displayed_max_value": config.get("displayed_max_value"),
+        "scale_multiplier": config.get("scale_multiplier"),
         "min_angle": config.get("min_angle"),
         "max_angle": config.get("max_angle"),
         "direction": config.get("direction"),
@@ -253,6 +268,17 @@ def normalize_config(config: dict[str, Any]) -> dict[str, Any]:
     }
     if normalized["direction"] not in (None, "clockwise", "counterclockwise"):
         raise AgentError("direction must be clockwise, counterclockwise, or null.")
+    for key in ("displayed_max_value", "scale_multiplier"):
+        value = normalized[key]
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise AgentError(f"{key} must be a number or null.")
+    if (
+        normalized["scale_multiplier"] is not None
+        and normalized["scale_multiplier"] <= 0
+    ):
+        raise AgentError("scale_multiplier must be greater than 0.")
     return normalized
 
 

@@ -233,7 +233,7 @@ uv run --locked --offline python src/cli.py \
   --inputs data/measurebench/inputs.stage1.jsonl --mode mock
 ```
 
-自動テスト54件（段階1の28件＋段階2の26件）では、架空のHTTP応答で
+段階2までの自動テスト54件（段階1の28件＋段階2の26件）では、架空のHTTP応答で
 アナログ・デジタルの値・単位・不明状態、構造化出力、モデル設定の切替、
 認証／通信エラー、再試行、予算、記録、CLIの終了コードを確認します。
 テストの架空値・トークン数は測定結果やプロバイダの実使用量ではありません。
@@ -274,6 +274,77 @@ APIキー、Authorizationヘッダー、HTTPエラー本文は保存しません
 API障害や構造不正なら `error` とします。値・単位が読めても未校正の自動採用は行いません。
 エラーJSONを保存できた場合もCLIは終了コード1を返し、保存件数とエラー件数を別々に表示します。
 詳しくは [段階2の実装記録](docs/task02_stage2.md) を参照してください。
+
+### 仕様v0.2・段階3：固定補正の生成と再生成
+
+`--recipes` で最大2種類の固定レシピを選びます。全候補を同じ未補正ROIから
+独立して生成し、PNGと処理条件・ハッシュ・画質指標・個別の読取結果を保存します。
+候補の自動選択、Planner、精度による自動採用は行いません。
+指定しなければ段階1・2の従来動作のままです。
+
+| レシピID | 処理順 |
+|---|---|
+| resize_2x | Bicubicで縦横2倍 |
+| gamma_mild | 輝度Yのガンマ補正、指数0.75 |
+| clahe_mild | 輝度YのCLAHE |
+| gamma_clahe | ガンマ → CLAHE |
+| resize_gamma | ガンマ → 縦横2倍 |
+| resize_clahe | CLAHE → 縦横2倍 |
+| resize_gamma_clahe | ガンマ → CLAHE → 縦横2倍 |
+
+ガンマは `round(255 * (Y / 255) ** 0.75)` で、逆数ではありません。
+輝度処理にはOpenCVのRGB↔YCrCbを使い、透過PNGのalphaを保持します。
+CLAHEはclipLimit=2.0、希望タイル数8×8から始め、各辺のタイル数を
+`min(8, max(1, 辺の画素数 // 32))` に抑えます。実際のタイル数を結果へ記録します。
+拡大は縦横比を維持し、出力が6400万画素を超える場合は縮小せずエラーにします。
+
+手元の取得スクリプト既定の配置先を使う例です。APIキー不要・実API呼出し0回で、
+元ROIと2候補を生成し、保存した記録から同じ画像を再生成します。
+画像の場所が異なる場合は入力パスを変更してください。
+
+```bash
+stage3_result_path=$(uv run --locked --offline python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode mock --recipes resize_gamma clahe_mild)
+
+uv run --locked --offline python src/replay_corrections.py "$stage3_result_path"
+```
+
+ROI未指定なら画像全体の補正です。文字盤だけを対象にする場合は、
+EXIF向き補正後の座標で `--roi X1 Y1 X2 Y2` を明示し、単位と全目盛も含めてください。
+自動ROI検出は行いません。均一な白黒画像等では補正後も同じ見た目になることがあり、
+補正による変化は精度改善の証明ではありません。
+
+各runの保存内容：
+
+```text
+source.jpg / source.png
+normalized.png
+roi.png
+candidates/c1_resize_gamma.png
+candidates/c2_clahe_mild.png
+result.json
+```
+
+`result.json` の `candidates` は未補正のc0と補正候補c1/c2を含みます。
+処理版、各処理の実パラメータ、ライブラリ版、元ROIのハッシュ、出力のファイル・画素ハッシュを保存します。
+全候補の親はc0です。最上位の `reading` / `inference` は未補正ROIの結果を維持し、
+`selected_candidate_id=null`、`auto_accept=false` とします。
+画質指標は輝度分布等の参考情報であり、信頼度や採用スコアではありません。
+
+実APIで候補も読む場合は、段階2の認証・料金設定後に `--mode inference` と
+`--provider-config examples/openai_gpt6_luna.json` 等を指定します。
+未補正ROIと候補を同じ質問・設定で別々に読み、前の候補値や正解を渡しません。
+候補2件なら通常3送信、再試行を含め最大6送信です。
+観測全体で期限を共有し、金額枠は引き続きバッチ全体で共有します。
+候補生成・読取の失敗も結果に残し、CLIは非ゼロで終了します。
+今回は実APIを呼ばず、画像処理・モック・模擬HTTPだけで検証しました。
+
+再生成コマンドはROIと保存パラメータを検証し、API・モデル読取を行いません。
+元画像ファイルや元の補正候補が移動していても、run内のroi.pngとresult.jsonがあれば再生成できます。
+元のrunは変更せず、`outputs/replays/replay_<UUID>/` に画像とreplay.jsonを保存します。
+画素不一致は終了コード1、実行環境の差やPNGバイト列の一致は別項目で報告します。
+詳細と検証結果は [段階3の実装記録](docs/task03_stage3.md) を参照してください。
 
 ### 1枚をAIで判定して読み取る
 

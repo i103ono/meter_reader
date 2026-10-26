@@ -84,6 +84,14 @@ class VLMReader:
         self.provider = provider
         self.reader_id = provider.name + ":" + provider.config.model
         self.last_trace: InferenceTrace | None = None
+        self.observation_deadline: float | None = None
+
+    def begin_observation(self) -> None:
+        self.observation_deadline = self.provider.clock() + self.provider.config.deadline_seconds
+
+    def check_observation_budget(self) -> None:
+        if self.observation_deadline is not None and self.provider.clock() >= self.observation_deadline:
+            raise ReaderError("Observation deadline reached.", code="deadline_exceeded")
 
     def read(self, request: ReaderInput) -> ReaderOutput:
         provider, config = self.provider, self.provider.config
@@ -109,7 +117,10 @@ class VLMReader:
                      "image_url": "data:image/png;base64," + base64.b64encode(request.image_path.read_bytes()).decode("ascii")},
                 ]}],
             }
-            raw = provider.generate(payload, attempts, started + config.deadline_seconds)
+            deadline = started + config.deadline_seconds
+            if self.observation_deadline is not None:
+                deadline = min(deadline, self.observation_deadline)
+            raw = provider.generate(payload, attempts, deadline)
             return parse_reading(raw)
         except ReaderError as exc:
             error_code = exc.code

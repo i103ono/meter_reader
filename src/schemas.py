@@ -1,4 +1,4 @@
-"""Validated contracts for specification v0.2, stages 1 and 2."""
+"""Validated contracts for specification v0.2, stages 1 through 3."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -14,6 +14,10 @@ Identifier = Annotated[StrictStr, Field(min_length=1, max_length=256)]
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 ROI = tuple[StrictInt, StrictInt, StrictInt, StrictInt]
 TargetType = Literal["auto", "analog", "digital"]
+RecipeId = Literal[
+    "resize_2x", "gamma_mild", "clahe_mild", "gamma_clahe",
+    "resize_gamma", "resize_clahe", "resize_gamma_clahe",
+]
 
 
 class Contract(BaseModel):
@@ -207,9 +211,49 @@ class InferenceTrace(Contract):
     unit_normalization_version: Literal["unit-aliases-v1"] = "unit-aliases-v1"
 
 
+class ProcessingStep(Contract):
+    operation: Literal["gamma", "clahe", "resize"]
+    parameters: dict[str, JsonValue]
+
+
+class QualityMetrics(Contract):
+    width: StrictInt
+    height: StrictInt
+    luminance_p5: Number
+    luminance_p50: Number
+    luminance_p95: Number
+    luminance_spread: Number
+    dark_fraction: Number
+    saturated_fraction: Number
+    local_mean_spread: Number
+    parameters: dict[str, JsonValue]
+
+
+class CandidateResult(Contract):
+    candidate_id: Identifier
+    parent_candidate_id: Literal["c0"] | None
+    recipe_id: RecipeId | None
+    processing_version: Literal["fixed-recipes-v1"] = "fixed-recipes-v1"
+    steps: list[ProcessingStep] = Field(default_factory=list)
+    runtime: dict[str, StrictStr]
+    input_roi_sha256: StrictStr
+    image_path: StrictStr | None
+    image_sha256: StrictStr | None
+    pixel_sha256: StrictStr | None
+    image_size: tuple[StrictInt, StrictInt] | None
+    image_mode: StrictStr | None
+    quality: QualityMetrics | None
+    status: Literal["needs_review", "unreadable", "error"]
+    reading: ReaderOutput | None
+    inference: InferenceTrace | None
+    api_calls: Annotated[StrictInt, Field(ge=0)] | None
+    error_code: StrictStr | None = None
+    error: StrictStr | None = None
+
+
 class RunResult(Contract):
     schema_version: Literal["0.2"] = "0.2"
-    stage: Literal[1, 2] = 1
+    stage: Literal[1, 2, 3] = 1
     run_id: Identifier
     observation_id: Identifier
     meter_id: Identifier | None
@@ -239,3 +283,7 @@ class RunResult(Contract):
     api_calls: Annotated[StrictInt, Field(ge=0)] | None
     error: StrictStr | None = None
     inference: InferenceTrace | None = None
+    baseline_candidate_id: Literal["c0"] | None = None
+    selected_candidate_id: None = None
+    correction_candidates_generated: StrictInt = Field(default=0, ge=0)
+    candidates: list[CandidateResult] = Field(default_factory=list)

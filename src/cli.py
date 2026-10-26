@@ -57,6 +57,8 @@ def parse_args(argv=None):
     parser.add_argument("--model", help="Explicit OpenAI model ID; required for inference unless in provider config")
     parser.add_argument("--api-key-env", help="Credential variable name, never the credential value")
     parser.add_argument("--limit", type=int, help="Process at most N records")
+    parser.add_argument("--recipes", nargs="+", metavar="RECIPE",
+                        help="Generate up to two registered fixed corrections from the original ROI")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/runs"))
     args = parser.parse_args(argv)
     if (args.image is None) == (args.inputs is None):
@@ -103,6 +105,9 @@ def main(argv=None) -> int:
             )]
         if args.limit is not None:
             requests = requests[:args.limit]
+        if args.recipes is not None:
+            from tools import validate_recipes
+            validate_recipes(args.recipes)
         reader = configured_reader(args)
     except ValidationError as exc:
         # A mistakenly supplied secret field must not be echoed by validation errors.
@@ -115,10 +120,16 @@ def main(argv=None) -> int:
     failed, saved = 0, 0
     for index, request in enumerate(requests, 1):
         try:
-            result = run_observation(request, reader, args.output_dir, exif_timezone=args.exif_timezone)
+            result = run_observation(
+                request, reader, args.output_dir, exif_timezone=args.exif_timezone,
+                recipes=tuple(args.recipes or ()),
+            )
             saved += 1
             print(result, flush=True)
-            if json.loads(result.read_text())["status"] == "error":
+            saved_result = json.loads(result.read_text())
+            if saved_result["status"] == "error" or any(
+                candidate["status"] == "error" for candidate in saved_result.get("candidates", [])
+            ):
                 failed += 1
         except (OSError, ValueError, ImageLoadError) as exc:
             failed += 1

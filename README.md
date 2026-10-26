@@ -210,6 +210,71 @@ CLIはそれらを開かず、`labels` や `evaluator` を入力行へ混ぜる�
 詳細な既存機能との差分、検証範囲、段階2の前提は
 [段階1の実装記録](docs/task01_stage1.md) を参照してください。
 
+### 仕様v0.2・段階2：OpenAI接続と未補正ROIの読取
+
+段階2の接続実装を追加しました。今回の検証範囲はユーザー指定により
+**実装と通信モックまで** です。実API、VLMによる実画像の読取、精度評価は未実施です。
+既定の `--mode mock` は引き続きAPIを呼びません。
+
+希望モデルの「GPT-6 Luna」は、公式OpenAI SDKの
+[モデル型定義](https://github.com/openai/openai-python/blob/main/src/openai/types/shared/chat_model.py)
+で `gpt-6-luna` を確認し、
+非秘密の設定例を [examples/openai_gpt6_luna.json](examples/openai_gpt6_luna.json) に用意しました。
+この一覧はモデルIDの根拠であり、画像入力・構造化出力の実動作を検証したものではありません。
+別モデルは `--model <APIモデルID>` または設定ファイルの `model` で指定します。
+モデル指定を省略した推論は、設定不備として拒否し、別モデルへ自動で切り替えません。
+
+次はAPIキー不要・外部AI通信なしで実行できる確認コマンドです。
+
+```bash
+uv run --locked --offline python -m unittest discover -s tests -v
+uv run --locked --offline python src/cli.py --help
+uv run --locked --offline python src/cli.py \
+  --inputs data/measurebench/inputs.stage1.jsonl --mode mock
+```
+
+自動テスト54件（段階1の28件＋段階2の26件）では、架空のHTTP応答で
+アナログ・デジタルの値・単位・不明状態、構造化出力、モデル設定の切替、
+認証／通信エラー、再試行、予算、記録、CLIの終了コードを確認します。
+テストの架空値・トークン数は測定結果やプロバイダの実使用量ではありません。
+実画像20枚のHTTP模擬接続確認も実施し、20保存・0技術エラー、外部ソケット呼出し0件、
+画像と正解ファイルの不変性を確認しました。模擬応答は全件「値・単位不明」です。
+
+実APIの利用は次回の範囲です。利用時には、モデルの画像・JSON Schema対応を確認し、
+HTTPSの接続先 `api.openai.com` と認証・料金・費用上限を安全な環境設定で用意してください。
+設定ファイルにはキーの値を保存せず、環境変数名 `METER_READER_API_KEY` だけを指定します。
+ローカルで既存の `OPENAI_API_KEY` を使用する場合は、
+`--api-key-env OPENAI_API_KEY` と明示できます。新CLIは.envを自動読込しません。
+
+認証・費用設定を終えた後の実行形式（今回の検証では実行していません）：
+
+```bash
+uv run --locked python src/cli.py \
+  --inputs data/measurebench/inputs.stage1.jsonl \
+  --mode inference --provider-config examples/openai_gpt6_luna.json --limit 2
+```
+
+設定例の料金と米ドル上限は `null` です。金額上限を使用するには、
+`pricing` に `model`、現在の `input_usd_per_million` / `output_usd_per_million`、
+モデルの全コンテキストに基づく入力トークン上限 `max_input_tokens_per_call`、
+確認元 `source` を設定し、`max_cost_usd` を指定します。
+各送信前に入力上限＋最大出力分を予約し、使用量が分かった場合だけ精算します。
+バッチ全体で同じ上限を共有し、使用量不明の失敗・再試行は予約を保持します。
+これは設定された料金・上限に基づく見積りであり、未確認の料金や請求額を推測しません。
+料金未設定時の `estimated_cost_usd` は `null` で、金額上限は有効になりません。
+
+実行結果には `stage=2`、`mode=inference`、モデルID、プロンプト版、
+画像入力設定、呼出し回数・使用量・所要時間、元の出力文字列を記録します。
+APIキー、Authorizationヘッダー、HTTPエラー本文は保存しません。
+タイムアウトは最大30秒、Readerの期限は最大120秒、送信は1回＋一時障害の再試行1回までです。
+期限前後で残り時間を確認し、通信待機にはその残り時間以下のタイムアウトを渡します。
+構造不正・拒否・出力途切れは自動で修復再送しません。
+
+値・単位とも得られなければ `unreadable`、一部不明や候補値があれば `needs_review`、
+API障害や構造不正なら `error` とします。値・単位が読めても未校正の自動採用は行いません。
+エラーJSONを保存できた場合もCLIは終了コード1を返し、保存件数とエラー件数を別々に表示します。
+詳しくは [段階2の実装記録](docs/task02_stage2.md) を参照してください。
+
 ### 1枚をAIで判定して読み取る
 
 入力画像には、原則として計器を1台だけ写してください。

@@ -1,0 +1,11 @@
+{
+  "model": "gpt-6-luna",
+  "api_key_env": "METER_READER_API_KEY",
+  "image_detail": "high",
+  "timeout_seconds": 30,
+  "deadline_seconds": 120,
+  "max_api_calls": 2,
+  "max_output_tokens": 4096,
+  "pricing": null,
+  "max_cost_usd": null
+}

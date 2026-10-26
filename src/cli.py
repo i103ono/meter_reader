@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage 1 CLI. This module imports neither an OCR engine nor an AI client."""
+"""Mock or explicitly configured VLM reads, with no OCR model downloads."""
 from __future__ import annotations
 
 import argparse
@@ -28,6 +28,9 @@ def load_inputs(path: Path) -> list[ObservationInput]:
                 if not record.image_path.is_absolute():
                     record = record.model_copy(update={"image_path": path.resolve().parent / record.image_path})
                 records.append(record)
+            except ValidationError as exc:
+                fields = ["/".join(map(str, item["loc"])) for item in exc.errors(include_input=False)]
+                raise ValueError(f"{path}:{line_number}: invalid input fields: {', '.join(fields)}") from None
             except (ValueError, TypeError) as exc:
                 raise ValueError(f"{path}:{line_number}: {exc}") from exc
     if not records:
@@ -36,7 +39,7 @@ def load_inputs(path: Path) -> list[ObservationInput]:
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description="Save a v0.2 stage-1 mock run (no inference or API).")
+    parser = argparse.ArgumentParser(description="Save a v0.2 mock run or an uncorrected-ROI VLM read.")
     parser.add_argument("image", nargs="?", type=Path, help="One JPEG/PNG input")
     parser.add_argument("--inputs", type=Path, help="Input-only JSONL manifest (never labels)")
     roi = parser.add_mutually_exclusive_group()
@@ -49,7 +52,11 @@ def parse_args(argv=None):
     parser.add_argument("--captured-at", help="Timezone-aware ISO 8601 capture time; unknown if omitted")
     parser.add_argument("--question", help="Which display/scale to read; retained and forwarded to Reader")
     parser.add_argument("--exif-timezone", help="Explicit IANA zone for timezone-less DateTimeOriginal")
-    parser.add_argument("--mode", choices=("mock",), default="mock")
+    parser.add_argument("--mode", choices=("mock", "inference"), default="mock")
+    parser.add_argument("--provider-config", type=Path, help="Non-secret OpenAI provider JSON configuration")
+    parser.add_argument("--model", help="Explicit OpenAI model ID; required for inference unless in provider config")
+    parser.add_argument("--api-key-env", help="Credential variable name, never the credential value")
+    parser.add_argument("--limit", type=int, help="Process at most N records")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/runs"))
     args = parser.parse_args(argv)
     if (args.image is None) == (args.inputs is None):
@@ -59,7 +66,27 @@ def parse_args(argv=None):
         args.observation_id, args.captured_at, args.question,
     )):
         parser.error("with --inputs, set per-image options in JSONL instead of CLI overrides")
+    if args.limit is not None and args.limit <= 0:
+        parser.error("--limit must be positive")
+    if args.mode == "mock" and any((args.provider_config, args.model, args.api_key_env)):
+        parser.error("provider/model/credential settings require --mode inference")
     return args
+
+
+def configured_reader(args):
+    if args.mode == "mock":
+        return MockReader()
+    # Keep mock mode independent of provider initialization and credentials.
+    from provider import OpenAIProvider, ProviderConfig
+    from vlm_reader import VLMReader
+    settings = json.loads(args.provider_config.read_text()) if args.provider_config else {}
+    if not isinstance(settings, dict):
+        raise ValueError("provider config must be a JSON object")
+    if args.model is not None:
+        settings["model"] = args.model
+    if args.api_key_env is not None:
+        settings["api_key_env"] = args.api_key_env
+    return VLMReader(OpenAIProvider(ProviderConfig.model_validate(settings)))
 
 
 def main(argv=None) -> int:
@@ -74,18 +101,29 @@ def main(argv=None) -> int:
                 meter_id=args.meter_id, observation_id=args.observation_id,
                 captured_at=args.captured_at, question=args.question,
             )]
-    except (OSError, ValueError, ValidationError) as exc:
+        if args.limit is not None:
+            requests = requests[:args.limit]
+        reader = configured_reader(args)
+    except ValidationError as exc:
+        # A mistakenly supplied secret field must not be echoed by validation errors.
+        locations = ["/".join(map(str, item["loc"])) for item in exc.errors(include_input=False)]
+        print("Error: invalid input/configuration fields: " + ", ".join(locations), file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    failed = 0
+    failed, saved = 0, 0
     for index, request in enumerate(requests, 1):
         try:
-            result = run_observation(request, MockReader(), args.output_dir, exif_timezone=args.exif_timezone)
+            result = run_observation(request, reader, args.output_dir, exif_timezone=args.exif_timezone)
+            saved += 1
             print(result, flush=True)
+            if json.loads(result.read_text())["status"] == "error":
+                failed += 1
         except (OSError, ValueError, ImageLoadError) as exc:
             failed += 1
             print(f"Error: input {index} ({request.image_path}): {exc}", file=sys.stderr)
-    print(f"inputs: {len(requests)}, saved: {len(requests) - failed}, errors: {failed}", file=sys.stderr)
+    print(f"inputs: {len(requests)}, saved: {saved}, errors: {failed}", file=sys.stderr)
     return 1 if failed else 0
 
 

@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from image_io import ImageLoadError, prepare_image, save_png_exclusive, validate_roi_xyxy
 from reader import Reader, ReaderError, ReaderInput
-from schemas import ObservationInput, ReaderOutput, RunResult, SourceImage
+from schemas import InferenceTrace, ObservationInput, ReaderOutput, RunResult, SourceImage
 from timestamps import resolve_capture_time
 
 
@@ -53,12 +53,20 @@ def run_observation(
                 target_type=request.target_type,
                 question=request.question,
             )))
-        except (ReaderError, ValidationError) as exc:
-            status, reasons, error = "error", ["reader_error"], str(exc)
+        except ReaderError as exc:
+            status, reasons, error = "error", [exc.code], str(exc)
+        except ValidationError:
+            status, reasons, error = "error", ["invalid_reading"], "Reader returned an invalid reading."
+        if status != "error" and reader.mode == "inference" and reading.value is None and reading.unit is None:
+            status, reasons = "unreadable", ["value_and_unit_unreadable"]
+        trace = getattr(reader, "last_trace", None)
+        if trace is not None:
+            trace = InferenceTrace.model_validate(trace)
         # Detect a source modified during the run; it must never be silently accepted.
         if hashlib.sha256(prepared.original_path.read_bytes()).hexdigest() != prepared.sha256:
             raise ImageLoadError("Input image changed during processing")
         result = RunResult(
+            stage=getattr(reader, "stage", 1),
             run_id=run_id, observation_id=observation_id, meter_id=request.meter_id,
             captured_at=capture.captured_at, captured_timezone=capture.timezone,
             timestamp_source=capture.source, timestamp_metadata=capture.metadata,
@@ -73,7 +81,8 @@ def run_observation(
             dataset=request.dataset, acceptance_policy=request.acceptance_policy,
             mode=reader.mode, reader_id=reader.reader_id, status=status,
             reading=reading, reason_codes=reasons,
-            api_calls=0 if reader.mode == "mock" else None, error=error,
+            api_calls=len(trace.attempts) if trace is not None else (0 if reader.mode == "mock" else None),
+            error=error, inference=trace,
         )
         path = run_dir / "result.json"
         with path.open("x", encoding="utf-8") as handle:

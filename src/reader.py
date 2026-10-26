@@ -23,7 +23,9 @@ class Reader(Protocol):
 
 
 class ReaderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, code: str = "reader_error"):
+        super().__init__(message)
+        self.code = code
 
 
 class MockReader:

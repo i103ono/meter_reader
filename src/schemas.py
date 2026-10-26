@@ -1,4 +1,4 @@
-"""Validated contracts for specification v0.2, stage 1."""
+"""Validated contracts for specification v0.2, stages 1 and 2."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -164,9 +164,52 @@ class SourceImage(Contract):
     roi_path: StrictStr = "roi.png"
 
 
+class TokenUsage(Contract):
+    input_tokens: Annotated[StrictInt, Field(ge=0)] | None = None
+    output_tokens: Annotated[StrictInt, Field(ge=0)] | None = None
+    total_tokens: Annotated[StrictInt, Field(ge=0)] | None = None
+
+
+class InferenceAttempt(Contract):
+    number: Annotated[StrictInt, Field(ge=1)]
+    status: Literal["completed", "http_error", "network_error", "invalid_response", "refused", "incomplete"]
+    http_status: StrictInt | None = None
+    request_id: StrictStr | None = None
+    response_id: StrictStr | None = None
+    reported_model: StrictStr | None = None
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    elapsed_ms: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    raw_output: StrictStr | None = None
+    error_code: StrictStr | None = None
+
+
+class InferenceTrace(Contract):
+    provider: StrictStr
+    requested_model: StrictStr
+    prompt_version: StrictStr
+    image_detail: Literal["low", "high", "auto"]
+    image_width: StrictInt
+    image_height: StrictInt
+    max_output_tokens: StrictInt
+    timeout_seconds: Number
+    deadline_seconds: Number
+    api_call_limit: StrictInt
+    attempts: list[InferenceAttempt] = Field(default_factory=list)
+    elapsed_ms: Annotated[float, Field(ge=0, allow_inf_nan=False)]
+    input_tokens: StrictInt | None = None
+    output_tokens: StrictInt | None = None
+    estimated_cost_usd: StrictStr | None = None
+    cost_basis: Literal["unconfigured", "configured_token_rates"] = "unconfigured"
+    pricing_source: StrictStr | None = None
+    batch_cost_limit_usd: StrictStr | None = None
+    batch_cost_reserved_usd: StrictStr | None = None
+    error_code: StrictStr | None = None
+    unit_normalization_version: Literal["unit-aliases-v1"] = "unit-aliases-v1"
+
+
 class RunResult(Contract):
     schema_version: Literal["0.2"] = "0.2"
-    stage: Literal[1] = 1
+    stage: Literal[1, 2] = 1
     run_id: Identifier
     observation_id: Identifier
     meter_id: Identifier | None
@@ -185,7 +228,7 @@ class RunResult(Contract):
     acceptance_policy: dict[str, JsonValue] | None
     mode: Literal["mock", "inference"]
     reader_id: StrictStr
-    status: Literal["needs_review", "error"]
+    status: Literal["needs_review", "unreadable", "error"]
     reading: ReaderOutput | None
     auto_accept: Literal[False] = False
     effective_value: None = None
@@ -195,3 +238,4 @@ class RunResult(Contract):
     next_action: Literal["human_review"] = "human_review"
     api_calls: Annotated[StrictInt, Field(ge=0)] | None
     error: StrictStr | None = None
+    inference: InferenceTrace | None = None

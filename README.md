@@ -87,6 +87,129 @@ OPENAI_API_KEY=your_api_key_here
 
 ## クイックスタート
 
+### 仕様v0.2・段階1：APIなしで画像を記録する
+
+段階1用CLIは `src/cli.py` です。JPEG/PNGの検証、EXIF向き補正、ROI切り出し、
+観測ID・実行ID・日時の記録、結果JSONの保存を行います。
+**MockReaderは画素から値を推論せず、値・単位・目盛情報を `null` にします。**
+`mode=mock`、`status=needs_review`、`auto_accept=false` を保存し、精度や測定結果には使用しません。
+APIキー、外部通信、OCRモデルのダウンロード・実行は不要です。
+
+リポジトリ直下で実行します。Python 3.11とPydanticを含む依存関係はロックファイルから導入します。
+
+```bash
+uv sync --locked
+uv run --locked python -m unittest discover -s tests -v
+uv run --locked python src/cli.py --help
+```
+
+書き込み先が制限されたクラウド環境では、先に次を設定してください。
+
+```bash
+export UV_CACHE_DIR=/workspace/.cache/uv
+export UV_PYTHON_INSTALL_DIR=/workspace/.local/share/uv/python
+export XDG_CACHE_HOME=/workspace/.cache
+```
+
+実画像を持っていない場合も、次のコマンドをそのまま実行できます。
+人工画像を一意のディレクトリへ作成し、APIなしで結果JSONまで保存します。
+
+```bash
+uv run --locked python - <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from PIL import Image
+Path("outputs").mkdir(exist_ok=True)
+folder = Path(tempfile.mkdtemp(prefix="stage1-demo-", dir="outputs"))
+with Image.new("RGB", (120, 80), "white") as image:
+    image.save(folder / "synthetic.png")
+subprocess.run([sys.executable, "src/cli.py", str(folder / "synthetic.png"),
+                "--question", "動作確認専用。値を読んだ結果ではありません"], check=True)
+PY
+```
+
+自分の画像を指定する場合：
+
+```bash
+uv run --locked python src/cli.py data/images/example.jpg \
+  --roi 100 200 900 1000 --target-type analog \
+  --meter-id pressure-A --observation-id obs-A-001 \
+  --captured-at 2026-10-27T10:00:00+09:00 \
+  --question "MPa側の目盛と指針を対象にする"
+```
+
+新CLIの `--roi` は **EXIF向き補正後の元画像上の `[x1,y1,x2,y2]`** で、
+右端・下端は含みません。範囲外、空領域、不正型はエラーとなり、補正しません。
+既存の `crop_roi.py --roi` や設定JSONは引き続き `[x,y,width,height]` です。
+旧形式から接続する場合は新CLIの `--legacy-roi X Y W H`、
+または `image_io.xywh_to_xyxy()` / `xyxy_to_xywh()` を明示的に使ってください。
+`--roi` と `--legacy-roi` の併用はできません。
+
+ROI省略時は補正後の画像全体を保存します。日時省略時は、タイムゾーンが分かる
+EXIFのDateTimeOriginalだけを使用し、それ以外は `captured_at=null` にします。
+タイムゾーンなしEXIFを解釈する場合は `--exif-timezone Asia/Tokyo` のように明示してください。
+DSTで曖昧／存在しない日時は不明として残します。手入力の撮影日時を優先し、
+タイムゾーンなし手入力は拒否します。保存する撮影・処理日時はUTCで、
+撮影日時の元タイムゾーン、EXIF文字列、仮定したタイムゾーンと根拠を別に記録します。
+処理時刻を撮影時刻へ代入しません。
+
+結果は既定で `outputs/runs/run_<UUID>/` に保存し、標準出力へ `result.json` のパスを返します。
+`--output-dir` で保存ルートを変更できます。各実行には、元バイト列の `source.jpg/png`、
+向き補正済み `normalized.png`、未補正ROIの `roi.png`、`result.json` が残ります。
+元画像パス・SHA-256・向き・補正前後サイズ・ROI・質問文・実行モードを結果へ記録します。
+同じ画像を再読取する場合は `--observation-id` を維持してください。
+`run_id` と保存先は毎回別になり、既存ファイルがあれば上書きせず失敗します。
+観測ID省略時には新しい観測IDを発行します。単発CLIの `meter_id` は省略可能で、
+将来の履歴用には `MeterObservationInput` 型で必須にできます。
+
+### 開発用20枚の入力と正解の分離
+
+MeasureBench real_worldの選定済み20枚は、このクラウド環境の
+`data/measurebench/images/` に配置済みです。全20枚のSHA-256・画像サイズが添付の正解メタデータと一致し、
+MockReaderで全件の入力・JSON保存と再実行を確認しました。数値の精度評価は行っていません。
+添付の `inputs.jsonl`、`labels.jsonl`、`labels.csv`、`provenance.json` は原本のまま保持しています。
+原本の入力は `filename/question_id/question` 形式のため、
+入力とprovenanceだけからCLI用の `inputs.stage1.jsonl` を別途作成しました。
+正解の数値・単位・evaluatorはこの変換やReader入力へ含めません。
+
+別のセットを用意する場合は、次の入力専用JSONL契約を使用してください。
+JSONLの画像相対パスは **JSONLファイルのあるディレクトリ基準** で解決します。
+各行は次の形式です（パス・ID・質問・revision等は実際のメタデータを使用し、不明なら省略／null）。
+
+```json
+{"image_path":"images/example.jpg","observation_id":"obs-example","roi":null,"target_type":"auto","question":"元のデータセットの質問文","dataset":{"name":"MeasureBench","split":"real_world","revision":null,"seed":null,"question_id":null,"category":"pressure_gauge","source":null}}
+```
+
+```bash
+uv run --locked python src/cli.py --inputs data/measurebench/inputs.stage1.jsonl
+```
+
+各行から別の結果を保存し、標準エラーへ `inputs: 20, saved: 20, errors: 0` のような
+件数を表示します。一部画像が不正でも残りを確認し、エラーがあれば終了コードは1です。
+不正JSON・不明フィールドは行番号付きで拒否します。JSONLとCLIの個別設定は混在させません。
+
+| 種類 | 配置済み枚数 | 段階1と後続段階で確認すること |
+|---|---:|---|
+| 圧力計 | 10 | 入力・ROI・質問を保存。二重目盛は対象の単位・目盛を特定し、曖昧なら要確認 |
+| 電力量計 | 6 | 対象表示・桁・小数点・単位の質問を保持。カテゴリだけで計器形式を決めない |
+| 流量計 | 1 | 積算値と瞬時流量など、どの表示を読むか保持 |
+| パルスオキシメーター | 1 | SpO2と脈拍等の複数表示から対象を質問で指定 |
+| 電子ノギス | 2 | 表示・符号・mm/inch等の対象を保持し、単位を推測しない |
+
+カテゴリや質問から値・単位を作りません。Readerへ渡す型は
+`image_path`（保存したROI）、`target_type`、`question` のみです。
+`labels.jsonl` / `labels.csv`、元の `evaluator` / `evaluator_kwargs`、
+区間下限・上限、単位候補・出典は評価用ファイル側に元のまま保持してください。
+CLIはそれらを開かず、`labels` や `evaluator` を入力行へ混ぜると拒否します。
+区間正解を中央値へ変換したり、画像から公式正解を作ったりしません。
+`dataset.source` は入力の出典参照で、正解データ本体を含めません。
+20枚は開発・入力確認用であり、企業画像による最終性能評価や数値正解率とは分けます。
+
+詳細な既存機能との差分、検証範囲、段階2の前提は
+[段階1の実装記録](docs/task01_stage1.md) を参照してください。
+
 ### 1枚をAIで判定して読み取る
 
 入力画像には、原則として計器を1台だけ写してください。

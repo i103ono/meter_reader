@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import sqlite3
 
 from pydantic import ValidationError
 
@@ -13,6 +14,7 @@ from image_io import ImageLoadError, xywh_to_xyxy
 from reader import MockReader
 from recording import run_observation
 from schemas import ObservationInput
+from result_status import technical_failure
 
 
 def load_inputs(path: Path) -> list[ObservationInput]:
@@ -75,6 +77,7 @@ def parse_args(argv=None):
     parser.add_argument("--perspective-config", type=Path,
                         help="Manual ROI-local perspective correspondences JSON; required for fixed perspective recipe")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/runs"))
+    parser.add_argument("--database", type=Path, help="Also import this run and its images into durable SQLite history")
     args = parser.parse_args(argv)
     if (args.image is None) == (args.inputs is None):
         parser.error("provide exactly one image path or --inputs")
@@ -164,6 +167,10 @@ def main(argv=None) -> int:
             from validator import comparison_policy
             for request in requests:
                 comparison_policy(request)
+        if args.database:
+            from repository import Repository
+            with Repository(args.database):
+                pass  # Fail an unusable history destination before any paid request.
         reader = configured_reader(args)
         geometry_locator = None
         if args.allow_perspective and perspective_config is None:
@@ -185,7 +192,7 @@ def main(argv=None) -> int:
         locations = ["/".join(map(str, item["loc"])) for item in exc.errors(include_input=False)]
         print("Error: invalid input/configuration fields: " + ", ".join(locations), file=sys.stderr)
         return 1
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, sqlite3.Error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     failed, saved = 0, 0
@@ -201,20 +208,14 @@ def main(argv=None) -> int:
             )
             saved += 1
             print(result, flush=True)
+            if args.database:
+                from repository import Repository
+                with Repository(args.database) as repository:
+                    repository.import_run(result)
             saved_result = json.loads(result.read_text())
-            budget_codes = set()
-            if args.agent:
-                from agent import BUDGET_CODES, GEOMETRY_CODES
-                budget_codes = BUDGET_CODES | GEOMETRY_CODES
-            candidate_error = any(
-                candidate["status"] == "error" and (not args.agent or candidate.get("error_code") not in budget_codes)
-                for candidate in saved_result.get("candidates", [])
-            )
-            role_error = any(event["status"] == "error" and event.get("error_code") not in budget_codes
-                             for event in (saved_result.get("agent") or {}).get("events", []))
-            if saved_result["status"] == "error" or candidate_error or role_error:
+            if technical_failure(saved_result):
                 failed += 1
-        except (OSError, ValueError, ImageLoadError) as exc:
+        except (OSError, ValueError, ImageLoadError, sqlite3.Error) as exc:
             failed += 1
             print(f"Error: input {index} ({request.image_path}): {exc}", file=sys.stderr)
     print(f"inputs: {len(requests)}, saved: {saved}, errors: {failed}", file=sys.stderr)

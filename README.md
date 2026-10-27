@@ -606,6 +606,123 @@ uv run --locked --offline python src/replay_corrections.py "$demo_result_path"
 出力長辺は元ROIの長辺以下かつ最大2048画素とし、別途2倍拡大を組み合わせません。
 詳細と検証範囲は [傾き補正の実装記録](docs/task04a_perspective.md) を参照してください。
 
+### 仕様v0.2・段階5：履歴保存とA〜D比較評価
+
+SQLiteの履歴保存と、ラベルを別処理で照合する比較評価を追加しました。
+Reader・Planner・対応点用モデルの読取方法は変更していません。
+Web画面は段階6、前日比較・CSV／Excel出力は段階7で実装します。
+
+既存の単一画像CLIに `--database outputs/history/history.sqlite3` を追加すると、
+runと画像を履歴へ保存します。指定しなければ従来のファイル保存だけを行います。
+元の予測JSONを変更せず、画像もDB管理のディレクトリへコピーするため、元runの移動後も参照できます。
+
+今回ローカルで実行済みのrunは、APIなしで取り込めます。
+以下のmeter_idは開発画像の識別例です。実運用では物理計器・測定箇所に固定IDを割り当ててください。
+
+```bash
+uv sync --locked
+
+uv run --locked --offline python src/history_cli.py \
+  --database outputs/history/history.sqlite3 import \
+  outputs/runs/run_69cfebd100d14fbaaad61cdb0943a773/result.json \
+  --meter-id dev_pressure_104
+
+uv run --locked --offline python src/history_cli.py \
+  --database outputs/history/history.sqlite3 show measurebench_pressure_gauge_104
+```
+
+取込には `result.json` と、そのrun内で参照される元画像・ROI・候補画像が必要です。
+同じrun ID・内容の再取込は重複せず、内容が異なる同名runは拒否します。
+同じ観測の再読取は別runとして保存し、新しいrunを選択すると確認状態は引き継ぎません。
+`import --keep-selected` なら既存の選択を維持します。評価用の取込も既存の選択を維持します。
+
+履歴の主な確認項目：
+
+| 項目 | 意味 |
+|---|---|
+| selected_run_id | 現在表示対象の読取実行 |
+| read_status | その実行の元の判定。人の訂正で書き換えない |
+| review_status | unreviewed / confirmed / rejected |
+| effective_value / effective_unit / effective_scale | 選択中runについて人が確認した値等。未確認・却下ならnull |
+| corrected | 人による訂正の有無 |
+| run_ids | 同じ観測に属する読取実行。別の撮影として重複集計しない |
+
+確認・訂正・却下は明示的なCLI操作で履歴へ追記します。
+モデルの数値を確認する場合は `review <run_id> --action confirm --candidate-id c0`、
+訂正する場合は `--action correct --value <確認した値> --unit <確認した単位>`、
+却下する場合は `--action reject` を指定し、いずれも `--reviewer <確認者ID> --reason <理由>` が必要です。
+今回の実装・検証で実画像の値を確認済みにはしていません。
+`--review-id` を明示すれば同じ確認要求の再送も重複しません。
+目盛りの訂正は `--scale-json <JSON>` を使い、`source=manual` として記録します。
+元のモデル出力と訂正値は別に残り、過去の確認も消しません。
+
+`meter <JSON>` で表示名・設置場所・登録単位・目盛情報・系列版を登録できます。
+登録目盛りは `source=registry`、画像からの抽出は `source=image` と区別します。
+登録単位・目盛等を変更する場合は `series_version` を変え、古い観測には以前の版を残します。
+DBと画像は `history.sqlite3` と隣の `history_assets/` の組で保存するため、移動・バックアップは
+`outputs/history/` 全体を対象にしてください。
+
+A〜Dの比較実行は `src/benchmark.py`、保存後の評価は `src/evaluation.py` です。
+実行側には正解ファイルの引数を設けず、正解に合わせてレシピや候補を選びません。
+
+| 条件 | 評価する抽出値 |
+|---|---|
+| A | 全体画像の未補正読取 |
+| B | 未補正ROIの読取 |
+| C | 実行前に指定した固定レシピ1つの補正候補c1 |
+| D | エージェントが選んだ表示候補。選択なしは棄権 |
+
+B〜Dは同じROI・質問・計器種別を使い、Readerモデル・プロンプト・画像設定の整合性を検査します。
+Cのレシピは `--fixed-recipe` で事前に固定します。既定gamma_mildは動作例で、最良と評価したものではありません。
+needs_reviewの抽出候補と自動採用の成績を分け、欠損・棄権・技術エラーも共通のN件に含めます。
+
+次は確認済みROIを再利用する、**実APIを使う**1枚の比較例です。
+段階4の1実行より通信が増えます。送信・期限上限はA〜Dそれぞれのrunに適用し、
+料金枠を設定している場合は同じCLI内の全実行で共有します。
+
+```bash
+set -a
+source .env
+set +a
+
+experiment_path=$(uv run --locked python src/benchmark.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --question-id pressure_gauge_104 \
+  --roi-proposal outputs/runs/run_e47a495fbf7647818b03c65911a05444/roi_proposal.json \
+  --meter-id dev_pressure_104 \
+  --mode inference --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY --fixed-recipe resize_2x \
+  --database outputs/history/history.sqlite3)
+
+uv run --locked --offline python src/evaluation.py \
+  --experiment "$experiment_path" \
+  --labels data/dev_external/measurebench/labels.jsonl
+```
+
+射影補正をDの選択肢へ含める場合は `--allow-perspective` を追加します。
+比較実行はROI用APIを呼ばず、切り出し座標をA〜D開始前に確定します。
+入力専用JSONLは既存の `--inputs` 形式が使え、各行に `dataset.question_id` とROIを指定します。
+未指定ROIは既定で拒否します。全体画像をROIとする接続確認だけなら `--allow-full-image-roi` を明示できます。
+
+APIなしで試す場合は、上のbenchmarkコマンドの推論設定を `--mode mock` に置き換えます。
+Mockの評価レポートは `accuracy_evaluated=false`、正解率をnullとして出力し、
+配線確認を実際の画像読取精度として扱いません。
+
+評価は元の `interval_matching` と `multi_interval_matching` の区間・単位候補を保持します。
+複数区間はそれぞれの単位群と組で照合し、中央値への変換や暗黙の単位換算を行いません。
+公式evaluatorコードを実行する方式ではなく、明示した閉区間・単位照合のローカルアダプターです。
+元のevaluator・kwargs・出典をレポートへ残し、未対応の形式は黙って近似せず拒否します。
+labels.jsonlと同じ取得スクリプトのlabels.csvにも対応します。
+
+`evaluation.json` の `summaries.A`〜`D` に値・単位・総合正解率、状態別率、棄権率、
+時間・通信回数・使用量をまとめます。自動採用0件の誤り率、正解0の相対誤差、
+未設定の料金はnullです。`conditions` には各ケースの抽出候補・区間・照合根拠を残します。
+人の訂正値をモデルの推論成績へ混ぜません。
+
+今回の確認は204自動テスト、公開画像20枚×A〜Dの80run、20観測・380アセットのDB保存と再読込です。
+全体画像ROI・MockReaderによる接続確認であり、数値の正解率やROIの効果は未評価です。
+詳しくは [段階5の実装記録](docs/task05_stage5.md) を参照してください。
+
 ### 1枚をAIで判定して読み取る
 
 入力画像には、原則として計器を1台だけ写してください。

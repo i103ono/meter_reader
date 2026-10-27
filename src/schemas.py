@@ -124,6 +124,54 @@ class ScaleInfo(Contract):
         return self
 
 
+UnitPoint = tuple[
+    Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)],
+    Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)],
+]
+
+
+class AnalogStage(Contract):
+    """A model observation, not a ground-truth assessment of this stage."""
+    status: Literal["visible", "uncertain", "unreadable", "not_assessed"]
+    evidence: StrictStr | None
+
+    @model_validator(mode="after")
+    def observation_needs_evidence(self):
+        if self.status != "not_assessed" and not (self.evidence or "").strip():
+            raise ValueError("assessed analog stages require visible evidence or an explanation")
+        return self
+
+
+class AnalogAnchor(Contract):
+    value: Number
+    raw_text: StrictStr = Field(min_length=1)
+    tick_point: UnitPoint
+
+    @field_validator("raw_text")
+    @classmethod
+    def nonblank_text(cls, value):
+        if not value.strip():
+            raise ValueError("anchor text must not be blank")
+        return value
+
+
+class AnalogTrace(Contract):
+    """Coordinates refer only to the exact Reader input, normalized to [0,1]."""
+    target: AnalogStage
+    geometry: AnalogStage
+    scale: AnalogStage
+    needle: AnalogStage
+    interpolation: AnalogStage
+    view: Literal["front_facing", "oblique", "unknown"]
+    center: UnitPoint | None
+    tip: UnitPoint | None
+    counterweight: UnitPoint | None
+    anchors: tuple[AnalogAnchor, AnalogAnchor] | None
+    scale_unit: Annotated[StrictStr, Field(min_length=1, pattern=r"\S")] | None
+    interpolation_mode: Literal["linear", "unknown"]
+    fraction: Annotated[float, Field(strict=True, ge=0, le=1, allow_inf_nan=False)] | None
+
+
 class ReaderOutput(Contract):
     meter_type: Literal["analog", "digital", "unknown"] = "unknown"
     value: Number | None = None
@@ -136,6 +184,7 @@ class ReaderOutput(Contract):
     unit_evidence: StrictStr | None = None
     issue_codes: list[StrictStr] = Field(default_factory=list)
     scale: ScaleInfo = Field(default_factory=ScaleInfo)
+    analog_trace: AnalogTrace | None = None
 
     @model_validator(mode="after")
     def coherent_reading(self):
@@ -151,6 +200,8 @@ class ReaderOutput(Contract):
             raise ValueError("unreadable/absent unit must be null")
         if self.scale.source not in ("image", "none"):
             raise ValueError("Readers cannot supply manual or registry scale information")
+        if self.analog_trace is not None and self.meter_type != "analog":
+            raise ValueError("only analog readings may contain an analog trace")
         return self
 
 

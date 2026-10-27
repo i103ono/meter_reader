@@ -321,7 +321,7 @@ class PerspectiveTests(unittest.TestCase):
         def transport(request, timeout):
             name = json.loads(request.data)["text"]["format"]["name"]
             clock.now += 41
-            return response(ReaderOutput().model_dump() if name == "meter_reading_v02" else (
+            return response(ReaderOutput().model_dump() if name == "meter_reading_v03" else (
                 plan() if name == "meter_planner_v1" else geometry()))
         reader.provider.transport = transport
         with patch("candidate_io.apply_recipe", side_effect=AssertionError("Expired during geometry")):

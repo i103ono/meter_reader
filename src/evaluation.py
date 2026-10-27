@@ -15,6 +15,7 @@ from uuid import uuid4
 from repository import asset_in_run
 from schemas import RunResult
 from result_status import technical_failure
+from analog_diagnostics import diagnose_analog
 
 ALIASES = {"m³": "m^3", "kW·h": "kWh", "kW h": "kWh", "m³/h": "m^3/h"}
 
@@ -137,6 +138,42 @@ def trace_totals(result):
             "estimated_cost_usd": cost, "api_elapsed_ms": total("elapsed_ms")}
 
 
+def run_diagnostics(result, evaluation_candidate_id):
+    """Label-free evidence for every candidate, including ones D did not select."""
+    if result is None:
+        return {"agent_stop_reason": None, "run_reason_codes": [], "candidate_diagnostics": []}
+    candidates = result.candidates or [None]
+    rows = []
+    for candidate in candidates:
+        reading = candidate.reading if candidate is not None else result.reading
+        candidate_id = candidate.candidate_id if candidate is not None else "c0"
+        if candidate is not None:
+            image_size = candidate.image_size
+        elif result.roi is not None:
+            x1, y1, x2, y2 = result.roi
+            image_size = (x2 - x1, y2 - y1)
+        else:
+            image_size = result.source_image.normalized_size
+        rows.append({
+            "candidate_id": candidate_id,
+            "recipe_id": candidate.recipe_id if candidate is not None else None,
+            "is_evaluation_candidate": candidate_id == evaluation_candidate_id,
+            "status": candidate.status if candidate is not None else result.status,
+            "error_code": candidate.error_code if candidate is not None else None,
+            "value": reading.value if reading is not None else None,
+            "unit": reading.unit if reading is not None else None,
+            "value_status": reading.value_status if reading is not None else None,
+            "unit_status": reading.unit_status if reading is not None else None,
+            "meter_type": reading.meter_type if reading is not None else None,
+            "issue_codes": reading.issue_codes if reading is not None else [],
+            "analog_trace": reading.analog_trace.model_dump(mode="json") if reading is not None and reading.analog_trace else None,
+            "analog_diagnostic": diagnose_analog(reading, image_size),
+            "geometry_status": candidate.geometry.status if candidate is not None and candidate.geometry else None,
+        })
+    return {"agent_stop_reason": result.agent.stop_reason if result.agent is not None else None,
+            "run_reason_codes": result.reason_codes, "candidate_diagnostics": rows}
+
+
 def evaluate_experiment(experiment, labels_path):
     path = Path(experiment).expanduser().resolve()
     experiment_bytes = path.read_bytes()
@@ -234,6 +271,7 @@ def evaluate_experiment(experiment, labels_path):
                                     "auto_accept": result.auto_accept if result else False,
                                     "raw_value_text": reading.raw_value_text if reading else None,
                                     "wall_elapsed_ms": entry.get("wall_elapsed_ms"), "interrupted_attempts": entry.get("interrupted_attempts", 0), **totals, **score,
+                                    **run_diagnostics(result, entry.get("evaluation_candidate_id")),
                                     "label": label})
     if len(signatures) > 1:
         raise ValueError("A-D Reader model, prompt, image detail and output settings must match")
@@ -280,6 +318,15 @@ def summarize(items, simulated=False):
         values = [number(row[field]) for row in items if row[field] is not None]
         summary["mean_" + field] = str(sum(values) / len(values)) if values and not simulated else None
     summary["roi_skipped_cases"] = sum(row.get("skip_reason") in ("roi_unresolved", "roi_error") for row in items)
+    summary["agent_stop_reasons"] = dict(Counter(row["agent_stop_reason"] for row in items if row.get("agent_stop_reason")))
+    # Counts describe candidate observations, not verified causes or case rates.
+    candidates = [c for row in items for c in row.get("candidate_diagnostics", []) if c["meter_type"] == "analog"]
+    summary["analog_diagnostics"] = {
+        "candidate_count": len(candidates),
+        "trace_available_count": sum(c["analog_diagnostic"]["trace_available"] for c in candidates),
+        "reported_problem_stage_counts": dict(Counter(stage for c in candidates for stage in c["analog_diagnostic"]["reported_problem_stages"])),
+        "consistency_finding_counts": dict(Counter(code for c in candidates for code in c["analog_diagnostic"]["consistency_findings"])),
+    }
     return summary
 
 

@@ -106,7 +106,7 @@ class ROILocatorTests(unittest.TestCase):
         locator, reading = [entry[0] for entry in self.sent]
         self.assertEqual(len(self.sent), 2)
         self.assertEqual(locator["text"]["format"]["name"], "meter_roi_v1")
-        self.assertEqual(reading["text"]["format"]["name"], "meter_reading_v02")
+        self.assertEqual(reading["text"]["format"]["name"], "meter_reading_v03")
         locator_target = json.loads(locator["input"][0]["content"][0]["text"])
         reader_target = json.loads(reading["input"][0]["content"][0]["text"])
         self.assertEqual(locator_target, {"question": "Read the upper display", "target_type": "digital",

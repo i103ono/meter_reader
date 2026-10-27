@@ -24,7 +24,7 @@ from provider import (
 )
 from reader import ReaderError
 from recording import run_observation
-from schemas import ObservationInput, ReaderOutput, ScaleInfo
+from schemas import AnalogStage, AnalogTrace, ObservationInput, ReaderOutput, ScaleInfo
 from vlm_reader import VLMReader, parse_reading, structured_schema
 
 
@@ -42,6 +42,12 @@ def reading(kind="digital"):
             unit_evidence="Fabricated test: MPa is visible.",
             scale=ScaleInfo(min_value=0, max_value=1, minor_division=0.02,
                             unit="MPa", status="readable", source="image"),
+            analog_trace=AnalogTrace(
+                **{stage: AnalogStage(status="visible", evidence="Synthetic stage observation, not image evidence.")
+                   for stage in ("target", "geometry", "scale", "needle", "interpolation")},
+                view="unknown", center=None, tip=None, counterweight=None, anchors=None,
+                scale_unit="MPa", interpolation_mode="unknown", fraction=None,
+            ),
         ).model_dump()
     return ReaderOutput(
         meter_type="digital", value=123.4, raw_value_text="00123.40",

@@ -22,7 +22,7 @@ from reader import MockReader
 from recording import run_observation
 from replay_corrections import replay
 from roi_locator import ROILocator
-from schemas import ObservationInput, ReaderOutput, RunResult, ScaleInfo
+from schemas import AnalogStage, AnalogTrace, ObservationInput, ReaderOutput, RunResult, ScaleInfo
 from vlm_reader import VLMReader
 
 MODEL = "stage4-offline-fixture-not-a-real-model"
@@ -40,10 +40,16 @@ def response(document, **changes):
 
 
 def reading(value=None, unit=None, kind="analog", raw=None, issues=()):
+    trace = AnalogTrace(
+        **{stage: AnalogStage(status="visible", evidence="Synthetic stage observation, not image evidence.")
+           for stage in ("target", "geometry", "scale", "needle", "interpolation")},
+        view="unknown", center=None, tip=None, counterweight=None, anchors=None,
+        scale_unit=None, interpolation_mode="unknown", fraction=None,
+    ) if kind == "analog" else None
     return ReaderOutput(meter_type=kind, value=value, unit=unit, raw_value_text=raw,
                         value_status="readable" if value is not None else "unreadable",
                         unit_status="readable" if unit is not None else "unreadable",
-                        issue_codes=list(issues)).model_dump()
+                        issue_codes=list(issues), analog_trace=trace).model_dump()
 
 
 def plan(action="apply", recipe="resize_gamma"):

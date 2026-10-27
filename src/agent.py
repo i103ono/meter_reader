@@ -11,6 +11,7 @@ from schemas import AgentEvent, AgentTrace, ComparisonOutput, PlannerOutput
 from validator import compare_candidates, comparison_policy, eligible, raw_mismatch, scale_unit_conflict, AMBIGUOUS
 
 BUDGET_CODES = {"observation_api_call_limit", "deadline_exceeded", "cost_budget_exceeded", "retry_budget_exceeded"}
+GEOMETRY_CODES = {"geometry_ambiguous", "geometry_not_found"}
 
 
 @dataclass
@@ -67,10 +68,11 @@ def run_agent(request, reader, planner, comparator, run_dir, baseline, executor)
             plan_input = PlannerInput(
                 image_path=run_dir / "roi.png", target_type=request.target_type, question=request.question,
                 quality=candidates[0].quality, candidates=tuple(candidates), remaining_api_calls=remaining,
+                allow_perspective=executor.perspective_config is not None or executor.geometry_locator is not None,
             )
             def plan():
                 decision = PlannerOutput.model_validate(planner.plan(plan_input))
-                return validate_decision(decision, executor.tried)
+                return validate_decision(decision, executor.tried, allow_perspective=plan_input.allow_perspective)
             event = _event(planner, plan, "planner", turn)
             events.append(event)
             executor.verify()
@@ -88,7 +90,7 @@ def run_agent(request, reader, planner, comparator, run_dir, baseline, executor)
                 stop = candidate.error_code
                 events.append(AgentEvent(
                     role="correction", turn=turn, candidate_id=candidate.candidate_id,
-                    status="skipped" if stop in BUDGET_CODES else "error", error_code=stop,
+                    status="skipped" if stop in BUDGET_CODES | GEOMETRY_CODES else "error", error_code=stop,
                     error=candidate.error, reason_codes=[stop],
                 ))
                 break
@@ -148,9 +150,9 @@ def run_agent(request, reader, planner, comparator, run_dir, baseline, executor)
                       for c in candidates)
     valid_observation = any(c.reading is not None for c in candidates)
     technical = any(event.status == "error" for event in events) or any(
-        c.status == "error" and c.error_code not in BUDGET_CODES for c in candidates
+        c.status == "error" and c.error_code not in BUDGET_CODES | GEOMETRY_CODES for c in candidates
     )
-    blocked = stop in BUDGET_CODES or any(event.error_code in BUDGET_CODES for event in events)
+    blocked = stop in BUDGET_CODES | GEOMETRY_CODES or any(event.error_code in BUDGET_CODES for event in events)
     status = "needs_review" if has_partial or conflicts or technical or blocked or reader.mode == "mock" else "unreadable"
     if not valid_observation and technical:
         status = "error"

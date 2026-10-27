@@ -59,16 +59,33 @@ def replay(result_path: Path, output_dir: Path = Path("outputs/replays")) -> Pat
                 raise ValueError("Corrections must independently reference the original ROI")
             if candidate.input_roi_sha256 != roi_hash:
                 raise ValueError("Candidate references a different ROI")
-            expected = recipe_steps(candidate.recipe_id, roi.size)
-            if [step.model_dump() for step in candidate.steps] != [step.model_dump() for step in expected]:
-                raise ValueError("Saved parameters do not match the registered recipe version")
+            spec = None
+            if candidate.recipe_id == "perspective_rectify":
+                if (candidate.processing_version != "perspective-v1" or candidate.geometry is None
+                        or candidate.geometry.status != "ready" or candidate.geometry.spec is None
+                        or candidate.geometry.input_roi_sha256 != roi_hash):
+                    raise ValueError("Perspective replay requires validated, ROI-bound correspondences")
+                spec = candidate.geometry.spec
+                from perspective import validate_saved_step
+                if len(candidate.steps) != 1:
+                    raise ValueError("Perspective replay requires one uncombined step")
+                validate_saved_step(spec, roi.size, candidate.steps[0])
+            else:
+                expected = recipe_steps(candidate.recipe_id, roi.size)
+                if [step.model_dump() for step in candidate.steps] != [step.model_dump() for step in expected]:
+                    raise ValueError("Saved parameters do not match the registered recipe version")
         root = output_dir.expanduser().resolve() / ("replay_" + uuid4().hex)
         root.mkdir(parents=True, exist_ok=False)
         with (root / "roi.png").open("xb") as handle:
             handle.write(roi_bytes)
         entries = []
         for candidate in corrected:
-            correction = apply_recipe(roi, candidate.recipe_id)
+            if candidate.recipe_id == "perspective_rectify":
+                from perspective import warp
+                from tools import Correction
+                correction = Correction(image=warp(roi, candidate.steps[0]), steps=candidate.steps)
+            else:
+                correction = apply_recipe(roi, candidate.recipe_id)
             try:
                 path = root / f"{candidate.candidate_id}_{candidate.recipe_id}.png"
                 save_png_exclusive(correction.image, path)

@@ -20,6 +20,7 @@ TargetType = Literal["auto", "analog", "digital"]
 RecipeId = Literal[
     "resize_2x", "gamma_mild", "clahe_mild", "gamma_clahe",
     "resize_gamma", "resize_clahe", "resize_gamma_clahe",
+    "perspective_rectify",
 ]
 
 
@@ -270,8 +271,57 @@ class ROIProposal(Contract):
         return self
 
 
+Point = tuple[Number, Number]
+FourPoints = tuple[Point, Point, Point, Point]
+
+
+class PerspectiveSpec(Contract):
+    reference: Literal["dial_cardinals", "rectangle"]
+    source_points: FourPoints
+    aspect_ratio: Number | None = None
+    evidence: StrictStr = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def known_reference(self):
+        if not self.evidence.strip():
+            raise ValueError("perspective reference requires visible evidence")
+        if self.reference == "rectangle" and (self.aspect_ratio is None or not 0.25 <= self.aspect_ratio <= 4):
+            raise ValueError("rectangle requires an explicit width/height aspect ratio between 0.25 and 4")
+        if self.reference == "dial_cardinals" and self.aspect_ratio is not None:
+            raise ValueError("dial cardinal reference uses a circle; aspect_ratio must be null")
+        return self
+
+
+class GeometryOutput(Contract):
+    status: Literal["ready", "ambiguous", "not_found"]
+    points: FourPoints | None
+    evidence: StrictStr
+    issue_codes: list[StrictStr]
+
+    @model_validator(mode="after")
+    def coherent_geometry(self):
+        if (self.status == "ready") != (self.points is not None) or not self.evidence.strip():
+            raise ValueError("ready geometry needs four points; unresolved geometry needs an explanation")
+        if self.status == "ready" and {"ellipse_only", "occluded_reference", "ambiguous_reference", "unverified_orientation"}.intersection(self.issue_codes):
+            raise ValueError("uncertain physical reference cannot be ready")
+        return self
+
+
+class GeometryRecord(Contract):
+    version: Literal["perspective-geometry-v1"] = "perspective-geometry-v1"
+    source: Literal["manual", "vlm", "mock"]
+    status: Literal["ready", "ambiguous", "not_found", "error"]
+    input_roi_sha256: SHA256
+    spec: PerspectiveSpec | None
+    response: GeometryOutput | None = None
+    inference: InferenceTrace | None = None
+    api_calls: Annotated[StrictInt, Field(ge=0)] = 0
+    error_code: StrictStr | None = None
+    error: StrictStr | None = None
+
+
 class ProcessingStep(Contract):
-    operation: Literal["gamma", "clahe", "resize"]
+    operation: Literal["gamma", "clahe", "resize", "perspective"]
     parameters: dict[str, JsonValue]
 
 
@@ -292,7 +342,8 @@ class CandidateResult(Contract):
     candidate_id: Identifier
     parent_candidate_id: Literal["c0"] | None
     recipe_id: RecipeId | None
-    processing_version: Literal["fixed-recipes-v1"] = "fixed-recipes-v1"
+    processing_version: Literal["fixed-recipes-v1", "perspective-v1"] = "fixed-recipes-v1"
+    geometry: GeometryRecord | None = None
     steps: list[ProcessingStep] = Field(default_factory=list)
     runtime: dict[str, StrictStr]
     input_roi_sha256: StrictStr

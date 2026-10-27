@@ -518,6 +518,94 @@ API・Plannerなしに再生成できます。候補なし、または未生成�
 実APIでのPlannerの判断・読取精度・費用は未検証です。
 詳細は [段階4の実装記録](docs/task04_stage4.md) を参照してください。
 
+### 追加レシピ：対応点を用いた傾き補正
+
+`perspective_rectify` を追加しました。文字盤平面上の対応点からOpenCVで射影変換します。
+明るさ補正と組み合わせず、元ROIから独立した1候補として生成します。
+最大2候補・合計6送信・120秒の制限は維持します。Readerのプロンプトと自動採用方針は変更しません。
+
+`--agent --allow-perspective` でPlannerの選択肢へ追加します。
+Plannerがこのレシピを選んだ場合だけ、別のVLM要求で物理的な対応点を提案させます。
+レシピの選択を強制する引数ではありません。保存ROIを再利用する実APIの実行例です。
+`roi_run_dir` は前述のROI確認で保存したrunのディレクトリです。
+
+```bash
+set -a
+source .env
+set +a
+
+uv run --locked python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode inference --agent --allow-perspective \
+  --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY \
+  --roi-proposal "$roi_run_dir/roi_proposal.json"
+```
+
+自動提案の対象は円形のアナログ文字盤で、文字盤上の物理的な「上・右・下・左」を
+特定できる場合です。**見かけの楕円の端や、円を囲む四角の角を対応点にしません。**
+物理的な向きの根拠がない、手で隠れている、印刷面とケースの縁を区別できない場合は、
+曖昧として補正を見送ります。今回のタイヤ圧力計でも補正を見送る可能性があります。
+自動提案は縮小せず元ROIの座標を使うため、各辺2048画素以下に限定します。
+明示的なdigital指定では、未知の縦横比を推測して矩形補正せず、手動対応点を必要とします。
+
+**対応点の数値検証に通っても、物理的に正しい点を選べた保証にはなりません。**
+`candidates/cN_perspective_points.png` の点と、その候補の補正画像を目視確認してください。
+補正前後の値が食い違えば要確認のままです。
+
+APIなしで人工画像の傾き補正・再生成を試せます。ここで生成する画像は人工の図形で、
+実際の計器や測定値ではありません。既知の四隅と正方形の縦横比を使用します。
+
+```bash
+demo_dir=$(uv run --locked --offline python examples/demo_perspective.py)
+demo_result_path=$(uv run --locked --offline python src/cli.py \
+  "$demo_dir/oblique.png" --mode mock \
+  --recipes perspective_rectify \
+  --perspective-config "$demo_dir/perspective.json")
+
+uv run --locked --offline python src/replay_corrections.py "$demo_result_path"
+```
+
+`front.png` が元の図形、`oblique.png` が人工的に傾けた入力です。
+補正画像は結果runの `candidates/c1_perspective_rectify.png` に保存されます。
+
+実画像で手動対応点を使う場合は、次の形式のJSONを作り `--perspective-config` へ指定します。
+以下の数字は人工デモ専用です。実画像へ流用しないでください。
+
+```json
+{
+  "reference": "rectangle",
+  "source_points": [[60,22],[340,55],[304,260],[25,222]],
+  "aspect_ratio": 1.0,
+  "evidence": "Artificial known square drawing"
+}
+```
+
+- 座標は **EXIF補正・ROI切り出し後の画像内の画素中心**。元画像座標ではありません。
+  範囲は `0 <= x <= ROI幅-1`、`0 <= y <= ROI高さ-1` で、ROIの右下を含まない範囲指定とは区別します。
+- `rectangle` の点順は左上・右上・右下・左下。`aspect_ratio` は既知の実物の幅÷高さです。
+  点の見かけの距離から縦横比を推測しません。
+- `dial_cardinals` は物理的な円の上・右・下・左で、`aspect_ratio` はnullまたは省略します。
+  円のどの位置か特定できない場合、楕円の端を代入しないでください。
+- 不正な型・非有限値・範囲外・逆順・交差・重複・小さすぎる領域・不安定な変換・
+  元ROIの外側が必要な出力を拒否します。無効な点を自動補正しません。
+
+手動設定は単一画像に対応し、`--agent` または `--recipes perspective_rectify` と併用します。
+`--agent` では、設定があるだけでレシピを選択肢へ追加し、対応点用のAPIを省略します。
+固定レシピで実行する場合は必ず手動設定が必要です。
+画像・ROI・向きが変わった場合は、対応点の再確認が必要です。
+
+記録は `candidates[].geometry`（対応点の出典、根拠、状態、通信記録）と
+`candidates[].steps[].parameters`（対応点、出力サイズ、変換行列、補間法）を確認します。
+対応点の曖昧さは `geometry_ambiguous`／`geometry_not_found` として停止し、
+未生成の候補を読取結果へ混ぜません。数値不正・API障害は技術エラーとして残します。
+この候補の `api_calls` は、対応点用APIとReaderの送信数の合計です。
+
+保存行列は対応点から検証したうえで再生成に使用します。再生成ではVLMを呼びません。
+元画像・元ROIを変更せず、RGB/RGBAに対応します。RGBAはalphaを乗じて補間し、色にじみを抑えます。
+出力長辺は元ROIの長辺以下かつ最大2048画素とし、別途2倍拡大を組み合わせません。
+詳細と検証範囲は [傾き補正の実装記録](docs/task04a_perspective.md) を参照してください。
+
 ### 1枚をAIで判定して読み取る
 
 入力画像には、原則として計器を1台だけ写してください。

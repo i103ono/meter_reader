@@ -70,13 +70,19 @@ def parse_args(argv=None):
                         help="Let a bounded Planner choose at most two corrections (mock mode stays offline)")
     parser.add_argument("--comparison-policy", type=Path,
                         help="JSON containing analog_absolute_tolerance and unit; comparison only, no automatic acceptance")
+    parser.add_argument("--allow-perspective", action="store_true",
+                        help="Offer perspective_rectify to the agent; automatic landmarks use the shared API budget")
+    parser.add_argument("--perspective-config", type=Path,
+                        help="Manual ROI-local perspective correspondences JSON; required for fixed perspective recipe")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/runs"))
     args = parser.parse_args(argv)
     if (args.image is None) == (args.inputs is None):
         parser.error("provide exactly one image path or --inputs")
+    if args.inputs and args.perspective_config:
+        parser.error("--perspective-config supports a single image; use a separate command per ROI")
     if args.inputs and any(value is not None for value in (
         args.roi, args.legacy_roi, args.target_type, args.meter_id,
-        args.observation_id, args.captured_at, args.question, args.roi_proposal, args.comparison_policy,
+        args.observation_id, args.captured_at, args.question, args.roi_proposal, args.comparison_policy, args.perspective_config,
     )):
         parser.error("with --inputs, set per-image options in JSONL instead of CLI overrides")
     if args.limit is not None and args.limit <= 0:
@@ -93,6 +99,10 @@ def parse_args(argv=None):
         parser.error("--agent cannot be combined with --recipes or --roi-only")
     if args.comparison_policy is not None and not args.agent:
         parser.error("--comparison-policy requires --agent")
+    if args.allow_perspective and not args.agent:
+        parser.error("--allow-perspective requires --agent")
+    if args.perspective_config and args.roi_only:
+        parser.error("--perspective-config cannot be combined with --roi-only")
     return args
 
 
@@ -115,6 +125,14 @@ def configured_reader(args):
 def main(argv=None) -> int:
     args = parse_args(argv)
     try:
+        perspective_config = None
+        if args.perspective_config:
+            from schemas import PerspectiveSpec
+            perspective_config = PerspectiveSpec.model_validate_json(args.perspective_config.read_bytes())
+        if args.recipes and "perspective_rectify" in args.recipes and perspective_config is None:
+            raise ValueError("Fixed perspective recipe requires --perspective-config")
+        if perspective_config is not None and not (args.agent or args.recipes and "perspective_rectify" in args.recipes):
+            raise ValueError("Perspective config requires --agent or the perspective_rectify recipe")
         policy = None
         if args.comparison_policy:
             from schemas import ComparisonPolicy
@@ -147,6 +165,10 @@ def main(argv=None) -> int:
             for request in requests:
                 comparison_policy(request)
         reader = configured_reader(args)
+        geometry_locator = None
+        if args.allow_perspective and perspective_config is None:
+            from geometry_locator import VLMGeometryLocator, MockGeometryLocator
+            geometry_locator = VLMGeometryLocator(reader.provider) if reader.mode == "inference" else MockGeometryLocator()
         planner, comparator = None, None
         if args.agent:
             from planner import MockPlanner, MockComparator, VLMPlanner, VLMComparator
@@ -175,14 +197,15 @@ def main(argv=None) -> int:
                 roi_locator=locator, roi_proposal=proposal, roi_only=args.roi_only,
                 roi_proposal_reference=str(args.roi_proposal.expanduser().resolve()) if args.roi_proposal else None,
                 planner=planner, comparator=comparator,
+                perspective_config=perspective_config, geometry_locator=geometry_locator,
             )
             saved += 1
             print(result, flush=True)
             saved_result = json.loads(result.read_text())
             budget_codes = set()
             if args.agent:
-                from agent import BUDGET_CODES
-                budget_codes = BUDGET_CODES
+                from agent import BUDGET_CODES, GEOMETRY_CODES
+                budget_codes = BUDGET_CODES | GEOMETRY_CODES
             candidate_error = any(
                 candidate["status"] == "error" and (not args.agent or candidate.get("error_code") not in budget_codes)
                 for candidate in saved_result.get("candidates", [])

@@ -42,10 +42,10 @@ def _read_asset(reader: Reader, path: Path, request: ObservationInput) -> dict:
     }
 
 
-def _candidates(reader, request, run_dir, recipe_ids, baseline):
+def _candidates(reader, request, run_dir, recipe_ids, baseline, *, perspective_config=None):
     from candidate_io import CandidateExecutor
     executor = CandidateExecutor(run_dir, lambda path: _read_asset(reader, path, request),
-                                 getattr(reader, "check_observation_budget", lambda: None))
+                                 getattr(reader, "check_observation_budget", lambda: None), perspective_config=perspective_config)
     candidates = [executor.baseline(baseline)]
     for index, recipe_id in enumerate(recipe_ids, 1):
         candidates.append(executor.apply(recipe_id, index))
@@ -66,12 +66,26 @@ def run_observation(
     roi_only: bool = False,
     planner=None,
     comparator=None,
+    perspective_config=None,
+    geometry_locator=None,
 ) -> Path:
     if not isinstance(recipes, (list, tuple)):
         raise ValueError("recipes must be a list of registered recipe IDs")
     if recipes:
         from tools import validate_recipes
         recipes = validate_recipes(recipes)
+    if geometry_locator is not None:
+        if planner is None or geometry_locator.mode != reader.mode or (reader.mode == "inference" and (
+            getattr(geometry_locator, "provider", None) is not getattr(reader, "provider", None)
+        )):
+            raise ValueError("Geometry locator must share the agent mode/provider/budget")
+    if "perspective_rectify" in recipes and perspective_config is None:
+        raise ValueError("Fixed perspective recipe requires --perspective-config")
+    if perspective_config is not None:
+        from schemas import PerspectiveSpec
+        perspective_config = PerspectiveSpec.model_validate(perspective_config)
+        if planner is None and "perspective_rectify" not in recipes:
+            raise ValueError("Perspective config requires the agent or perspective recipe")
     if planner is not None:
         from validator import comparison_policy
         comparison_policy(request)
@@ -140,6 +154,9 @@ def run_observation(
         if roi_ready:
             with prepared.image.crop(roi or (0, 0, *prepared.image.size)) as crop:
                 save_png_exclusive(crop, run_dir / "roi.png")
+                if perspective_config is not None:
+                    from perspective import perspective_step
+                    perspective_step(perspective_config, crop.size)
         reading, trace, error, candidates = None, None, None, []
         agent_trace, selected, next_action = None, None, "human_review"
         status, reasons, api_calls = "needs_review", [], roi_calls
@@ -161,14 +178,17 @@ def run_observation(
                 from agent import run_agent
                 from candidate_io import CandidateExecutor
                 executor = CandidateExecutor(run_dir, lambda path: _read_asset(reader, path, request),
-                                             getattr(reader, "check_observation_budget", lambda: None))
+                                             getattr(reader, "check_observation_budget", lambda: None),
+                                             perspective_config=perspective_config, geometry_locator=geometry_locator,
+                                             target_type=request.target_type, question=request.question)
                 outcome = run_agent(request, reader, planner, comparator, run_dir, baseline, executor)
                 candidates, agent_trace = outcome.candidates, outcome.trace
                 status, reasons, error = outcome.status, outcome.reasons, outcome.error
                 selected, next_action = outcome.selected_candidate_id, outcome.next_action
                 api_calls = outcome.api_calls + roi_calls if outcome.api_calls is not None else None
             else:
-                candidates = _candidates(reader, request, run_dir, recipes, baseline) if recipes else []
+                candidates = _candidates(reader, request, run_dir, recipes, baseline,
+                                         perspective_config=perspective_config) if recipes else []
                 api_calls = baseline["api_calls"] + roi_calls if baseline["api_calls"] is not None else None
         if candidates and planner is None:
             counts = [candidate.api_calls for candidate in candidates]

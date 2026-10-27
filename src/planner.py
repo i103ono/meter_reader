@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from reader import ReaderError
 from schemas import CandidateResult, ComparisonOutput, PlannerOutput, QualityMetrics
-from tools import RECIPES
+from tools import REGISTERED_RECIPES
 from vlm_request import StructuredImageClient, strict_schema
 
 
@@ -21,6 +21,7 @@ class PlannerInput:
     quality: QualityMetrics
     candidates: tuple[CandidateResult, ...]
     remaining_api_calls: int | None
+    allow_perspective: bool = False
 
 
 @dataclass(frozen=True)
@@ -43,8 +44,9 @@ def parse_contract(raw, contract, code):
         raise ReaderError("VLM output violates the planning/comparison contract.", code=code) from None
 
 
-def validate_decision(decision, tried):
-    if decision.action == "apply" and (decision.recipe_id not in RECIPES or decision.recipe_id in tried):
+def validate_decision(decision, tried, *, allow_perspective=False):
+    if decision.action == "apply" and (decision.recipe_id not in REGISTERED_RECIPES or decision.recipe_id in tried
+                                      or decision.recipe_id == "perspective_rectify" and not allow_perspective):
         raise ReaderError("Planner selected an unknown or previously attempted recipe.", code="invalid_planner_decision")
     return decision
 
@@ -67,11 +69,17 @@ class VLMPlanner(StructuredImageClient):
 
     def plan(self, request: PlannerInput) -> PlannerOutput:
         tried = [c.recipe_id for c in request.candidates if c.recipe_id is not None]
+        schema = strict_schema(PlannerOutput)
+        if not request.allow_perspective:
+            for node in schema["properties"]["recipe_id"]["anyOf"]:
+                if "enum" in node:
+                    node["enum"] = [name for name in node["enum"] if name != "perspective_rectify"]
         def parse(raw):
-            return validate_decision(parse_contract(raw, PlannerOutput, "invalid_planner_decision"), tried)
+            return validate_decision(parse_contract(raw, PlannerOutput, "invalid_planner_decision"), tried,
+                                     allow_perspective=request.allow_perspective)
         return self.request(
-            request.image_path, prompt_version="meter-planner-v1", schema_name="meter_planner_v1",
-            schema=strict_schema(PlannerOutput), parse=parse,
+            request.image_path, prompt_version="meter-planner-v2" if request.allow_perspective else "meter-planner-v1", schema_name="meter_planner_v1",
+            schema=schema, parse=parse,
             instructions="""Choose a next action for this single meter observation.
 Use the original, uncorrected ROI, descriptive quality metrics and this run's
 candidate history. Return apply with ONE untried registered recipe, stop when
@@ -88,7 +96,9 @@ No past observations, dataset answers or expected values are available.""",
                 "target_type": request.target_type, "question": request.question,
                 "original_quality": request.quality.model_dump(mode="json"),
                 "history": [_history(c) for c in request.candidates],
-                "recipes": {name: list(steps) for name, steps in RECIPES.items() if name not in tried},
+                "recipes": {name: list(steps) for name, steps in REGISTERED_RECIPES.items()
+                            if name not in tried and (name != "perspective_rectify" or request.allow_perspective)},
+                **({"perspective_policy": "perspective_rectify requires a separate physical-correspondence check, or explicitly supplied manual points. It may be refused for occlusion or ambiguous geometry; it is not ellipse-to-circle guessing. Do not supply parameters."} if request.allow_perspective else {}),
                 "tried_recipes": tried, "remaining_corrections": 2 - len(tried),
                 "remaining_api_calls": request.remaining_api_calls,
             },

@@ -26,6 +26,8 @@ RECIPES = MappingProxyType({
     "resize_clahe": ("clahe", "resize"),
     "resize_gamma_clahe": ("gamma", "clahe", "resize"),
 })
+# The seven legacy recipes keep their parameter-free public contract.
+REGISTERED_RECIPES = MappingProxyType({**RECIPES, "perspective_rectify": ("perspective",)})
 
 
 class CorrectionError(ValueError):
@@ -37,7 +39,7 @@ def validate_recipes(recipe_ids) -> tuple[str, ...]:
         raise CorrectionError("recipes must be a list of registered recipe IDs")
     if len(recipe_ids) > MAX_CORRECTION_CANDIDATES:
         raise CorrectionError("At most two correction candidates are allowed per run")
-    if any(not isinstance(recipe, str) or recipe not in RECIPES for recipe in recipe_ids):
+    if any(not isinstance(recipe, str) or recipe not in REGISTERED_RECIPES for recipe in recipe_ids):
         raise CorrectionError("Unknown correction recipe")
     if len(set(recipe_ids)) != len(recipe_ids):
         raise CorrectionError("Duplicate correction recipes are not allowed")
@@ -56,7 +58,15 @@ def pixel_sha256(image: Image.Image) -> str:
     return hashlib.sha256(header + b"\0" + image.tobytes()).hexdigest()
 
 
-def recipe_steps(recipe_id: str, size: tuple[int, int]) -> list[ProcessingStep]:
+def recipe_steps(recipe_id: str, size: tuple[int, int], *, perspective=None) -> list[ProcessingStep]:
+    if recipe_id == "perspective_rectify":
+        from perspective import GeometryError, perspective_step
+        if perspective is None:
+            raise CorrectionError("Perspective recipe requires validated correspondences")
+        try:
+            return [perspective_step(perspective, size)]
+        except (GeometryError, ValueError) as exc:
+            raise CorrectionError(str(exc)) from exc
     if recipe_id not in RECIPES:
         raise CorrectionError("Unknown correction recipe")
     width, height = size
@@ -98,8 +108,14 @@ class Correction:
     steps: list[ProcessingStep]
 
 
-def apply_recipe(original_roi: Image.Image, recipe_id: str) -> Correction:
-    steps = recipe_steps(recipe_id, original_roi.size)
+def apply_recipe(original_roi: Image.Image, recipe_id: str, *, perspective=None) -> Correction:
+    steps = recipe_steps(recipe_id, original_roi.size, perspective=perspective)
+    if recipe_id == "perspective_rectify":
+        from perspective import GeometryError, warp
+        try:
+            return Correction(image=warp(original_roi, steps[0]), steps=steps)
+        except GeometryError as exc:
+            raise CorrectionError(str(exc)) from exc
     if original_roi.mode not in ("RGB", "RGBA"):
         raise CorrectionError("Correction input must be the normalized RGB/RGBA ROI")
     # Preflight allocations before any processing. No silent shrinking.

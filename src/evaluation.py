@@ -18,6 +18,8 @@ from result_status import technical_failure
 from analog_diagnostics import diagnose_analog
 
 ALIASES = {"m³": "m^3", "kW·h": "kWh", "kW h": "kWh", "m³/h": "m^3/h"}
+UNIT_MATCHING_POLICY = "strip-aliases-casefold-v1"
+CASEFOLDED_ALIASES = {key.casefold(): value.casefold() for key, value in ALIASES.items()}
 
 
 def number(value):
@@ -33,7 +35,15 @@ def number(value):
 
 
 def unit(value):
-    return ALIASES.get(value.strip(), value.strip()) if isinstance(value, str) else None
+    """User-requested evaluation policy only; retain original unit strings.
+
+    This intentionally treats capitalization as typography, including SI symbols.
+    It is not physical unit equivalence and never converts numeric magnitudes.
+    """
+    if not isinstance(value, str):
+        return None
+    folded = value.strip().casefold()
+    return CASEFOLDED_ALIASES.get(folded, folded)
 
 
 def label_alternatives(row):
@@ -280,7 +290,9 @@ def evaluate_experiment(experiment, labels_path):
     categories = sorted({row["label"].get("image_type", "unknown") for items in rows.values() for row in items})
     by_category = {category: {name: summarize([row for row in items if row["label"].get("image_type", "unknown") == category], simulated)
                               for name, items in rows.items()} for category in categories}
-    return {"version": "meter-evaluation-v1", "adapter": "local-closed-interval-v1",
+    return {"version": "meter-evaluation-v1", "adapter": "local-closed-interval-casefold-v2",
+            "unit_matching_policy": UNIT_MATCHING_POLICY,
+            "value_matching_policy": "closed-interval-with-corresponding-unit-v1",
             "official_evaluator_executed": False, "mode": document["mode"], "accuracy_evaluated": not simulated,
             "experiment_sha256": hashlib.sha256(experiment_bytes).hexdigest(),
             "labels_sha256": hashlib.sha256(labels_bytes).hexdigest(),

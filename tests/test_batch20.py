@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from batch_prepare import load_source, prepare_batch, load_prepared_batch
 from benchmark import run_benchmark
 from evaluation import evaluate_experiment, main as evaluate_main
-from evaluation_csv import safe_text
+from evaluation_csv import safe_text, truth_columns
 from provider import HTTPResult, OpenAIProvider, ProviderConfig, TransportFailure
 from reader import MockReader
 from schemas import ObservationInput, ReaderOutput
@@ -230,9 +230,32 @@ class Batch20Tests(unittest.TestCase):
         self.assertEqual(len(rows), 8)
         self.assertEqual({row["category"] for row in rows}, {"ALL", "test_category"})
         with (root / "cases.csv").open(encoding="utf-8-sig", newline="") as handle:
-            self.assertEqual(len(list(csv.DictReader(handle))), 4)
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 4)
+        for row in rows:
+            self.assertEqual((row["truth_lower"], row["truth_upper"]), ("1", "1"))
+            self.assertEqual(row["truth_value_unit"], "[1, 1] mm")
+            self.assertIn("predicted_value", row)
+            self.assertIn("predicted_unit", row)
+        with (root / "diagnostics.csv").open(encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertTrue(rows)
+        self.assertTrue(all(row["truth_unit"] == "mm" for row in rows))
+        self.assertTrue(all(row["predicted_value"] == row["value"] for row in rows))
+        self.assertTrue(all(row["predicted_unit"] == row["unit"] for row in rows))
         self.assertEqual(safe_text("=SUM(A1)"), "'=SUM(A1)")
         self.assertEqual(safe_text("-cmd"), "'-cmd")
+
+    def test_csv_alternatives_keep_intervals_paired_with_units(self):
+        row = {"truth_alternatives": [
+            {"interval": ["0.15", "0.2"], "units": ["MPa"]},
+            {"interval": ["1.5", "2"], "units": ["kgf/cm^2", "kgf/cm²"]}]}
+        columns = truth_columns(row)
+        self.assertIsNone(columns["truth_lower"])
+        self.assertIsNone(columns["truth_upper"])
+        self.assertEqual(columns["truth_value"], "[0.15, 0.2] | [1.5, 2]")
+        self.assertEqual(columns["truth_unit"], "MPa | kgf/cm^2 / kgf/cm²")
+        self.assertEqual(columns["truth_value_unit"], "[0.15, 0.2] MPa | [1.5, 2] kgf/cm^2 / kgf/cm²")
 
 
 if __name__ == "__main__":

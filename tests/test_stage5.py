@@ -286,11 +286,28 @@ class Stage5Tests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 number(value)
 
-    def test_safe_unit_aliases_do_not_casefold_magnitude(self):
+    def test_user_requested_case_insensitive_units_and_aliases(self):
         label = {"evaluator_kwargs": {"interval": [1, 1], "units": ["kW·h"]}}
         self.assertTrue(score_reading(ReaderOutput.model_validate(fixture_reading(1, "kWh")), label)["unit_correct"])
         label["evaluator_kwargs"]["units"] = ["mW"]
-        self.assertFalse(score_reading(ReaderOutput.model_validate(fixture_reading(1, "MW")), label)["unit_correct"])
+        self.assertTrue(score_reading(ReaderOutput.model_validate(fixture_reading(1, "MW")), label)["unit_correct"])
+        for truth, prediction in (("psi", "PSI"), ("MPa", "mpa"), ("bar", "BAR"),
+                                  ("kW·h", "KW H"), ("m³/h", "M^3/H")):
+            label["evaluator_kwargs"]["units"] = [truth]
+            score = score_reading(ReaderOutput.model_validate(fixture_reading(1, prediction)), label)
+            self.assertTrue(score["both_correct"])
+            self.assertEqual(score["predicted_unit"], prediction)
+
+    def test_analog_closed_interval_and_matching_unit_group_casefold(self):
+        label = {"evaluator": "multi_interval_matching", "evaluator_kwargs": {
+            "intervals": [[0.55, 0.6], [5.5, 6]], "units": [["MPa"], ["bar"]]}}
+        for value, units, expected in ((0.55, "MPA", True), (0.6, "mpa", True),
+                                       (0.57, "MPa", True), (0.549, "mpa", False),
+                                       (0.601, "MPa", False), (0.57, "BAR", False),
+                                       (5.7, "BAR", True), (5.7, "Pa", False)):
+            reading = ReaderOutput(meter_type="analog", value=value, unit=units,
+                                   value_status="readable", unit_status="readable")
+            self.assertEqual(score_reading(reading, label)["both_correct"], expected)
 
     def test_label_csv_and_jsonl_preserve_original_evaluator_metadata(self):
         csv_path = self.root / "labels.csv"

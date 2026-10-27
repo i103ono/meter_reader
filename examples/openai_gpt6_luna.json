@@ -5,6 +5,7 @@
   "timeout_seconds": 30,
   "deadline_seconds": 120,
   "max_api_calls": 2,
+  "max_observation_api_calls": 6,
   "max_output_tokens": 4096,
   "pricing": null,
   "max_cost_usd": null

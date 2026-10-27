@@ -1,4 +1,4 @@
-"""Validated contracts for specification v0.2, stages 1 through 3."""
+"""Validated contracts for specification v0.2, stages 1 through 3 and ROI proposals."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -6,13 +6,15 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
-    AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, StrictInt, StrictStr,
+    AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictInt, StrictStr,
     field_validator, model_validator,
 )
 
 Identifier = Annotated[StrictStr, Field(min_length=1, max_length=256)]
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 ROI = tuple[StrictInt, StrictInt, StrictInt, StrictInt]
+ImageSize = tuple[Annotated[StrictInt, Field(gt=0)], Annotated[StrictInt, Field(gt=0)]]
+SHA256 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 TargetType = Literal["auto", "analog", "digital"]
 RecipeId = Literal[
     "resize_2x", "gamma_mild", "clahe_mild", "gamma_clahe",
@@ -165,7 +167,7 @@ class SourceImage(Contract):
     normalized_size: tuple[StrictInt, StrictInt]
     exif_orientation: StrictInt | None = None
     normalized_path: StrictStr = "normalized.png"
-    roi_path: StrictStr = "roi.png"
+    roi_path: StrictStr | None = "roi.png"
 
 
 class TokenUsage(Contract):
@@ -198,6 +200,7 @@ class InferenceTrace(Contract):
     timeout_seconds: Number
     deadline_seconds: Number
     api_call_limit: StrictInt
+    observation_api_call_limit: StrictInt | None = None
     attempts: list[InferenceAttempt] = Field(default_factory=list)
     elapsed_ms: Annotated[float, Field(ge=0, allow_inf_nan=False)]
     input_tokens: StrictInt | None = None
@@ -209,6 +212,61 @@ class InferenceTrace(Contract):
     batch_cost_reserved_usd: StrictStr | None = None
     error_code: StrictStr | None = None
     unit_normalization_version: Literal["unit-aliases-v1"] = "unit-aliases-v1"
+
+
+class ROIProposalOutput(Contract):
+    """Locator coordinates refer to the exact image sent to the model."""
+    status: Literal["located", "ambiguous", "not_found"]
+    roi: ROI | None
+    target_description: StrictStr | None
+    reason: StrictStr | None
+    issue_codes: list[StrictStr]
+
+    @model_validator(mode="after")
+    def coherent_proposal(self):
+        if (self.status == "located") != (self.roi is not None):
+            raise ValueError("only located proposals may have a non-null ROI")
+        if self.status == "located" and not (self.target_description or "").strip():
+            raise ValueError("located proposals require a target description")
+        if self.status == "located" and {"ambiguous_target", "ambiguous_scale"}.intersection(self.issue_codes):
+            raise ValueError("unresolved target/scale ambiguity cannot be located")
+        if self.status != "located" and not (self.reason or "").strip():
+            raise ValueError("unresolved proposals require a reason")
+        return self
+
+
+class ROIProposal(Contract):
+    schema_version: Literal["roi-proposal-v1"] = "roi-proposal-v1"
+    observation_id: Identifier
+    input_sha256: SHA256
+    normalized_pixel_sha256: SHA256
+    normalized_size: ImageSize
+    model_image_size: ImageSize
+    model_image_sha256: SHA256
+    coordinate_system: Literal["exif_normalized_xyxy_exclusive"] = "exif_normalized_xyxy_exclusive"
+    mapping: Literal["floor_left_top_ceil_right_bottom-v1"] = "floor_left_top_ceil_right_bottom-v1"
+    resize: Literal["longest-side-1600-lanczos-v1"] = "longest-side-1600-lanczos-v1"
+    target_type: TargetType
+    question: StrictStr | None
+    status: Literal["located", "ambiguous", "not_found", "error"]
+    response: ROIProposalOutput | None
+    proposed_roi: ROI | None
+    inference: InferenceTrace
+    error_code: StrictStr | None = None
+    error: StrictStr | None = None
+
+    @model_validator(mode="after")
+    def coherent_record(self):
+        if self.status == "error":
+            if (self.proposed_roi is not None or not self.error_code or self.response is not None
+                    or self.inference.error_code != self.error_code):
+                raise ValueError("failed proposals require an error code and no ROI")
+        elif (self.response is None or self.response.status != self.status
+              or self.error_code is not None or self.error is not None or self.inference.error_code is not None):
+            raise ValueError("proposal status and response must agree")
+        if (self.status == "located") != (self.proposed_roi is not None):
+            raise ValueError("only located records may have a proposed ROI")
+        return self
 
 
 class ProcessingStep(Contract):
@@ -266,6 +324,11 @@ class RunResult(Contract):
     source_image: SourceImage
     roi: ROI | None
     roi_coordinate_system: Literal["exif_normalized_xyxy_exclusive"] = "exif_normalized_xyxy_exclusive"
+    roi_source: Literal["full_image", "manual", "vlm", "saved_vlm", "manual_override"] | None = None
+    roi_proposal: ROIProposal | None = None
+    roi_proposal_reference: StrictStr | None = None
+    roi_preview_path: StrictStr | None = None
+    read_requested: StrictBool = True
     target_type: TargetType
     question: StrictStr | None
     dataset: DatasetReference | None

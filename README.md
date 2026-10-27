@@ -312,7 +312,7 @@ uv run --locked --offline python src/replay_corrections.py "$stage3_result_path"
 
 ROI未指定なら画像全体の補正です。文字盤だけを対象にする場合は、
 EXIF向き補正後の座標で `--roi X1 Y1 X2 Y2` を明示し、単位と全目盛も含めてください。
-自動ROI検出は行いません。均一な白黒画像等では補正後も同じ見た目になることがあり、
+`--auto-roi` を明示しない場合、自動ROI検出は行いません。均一な白黒画像等では補正後も同じ見た目になることがあり、
 補正による変化は精度改善の証明ではありません。
 
 各runの保存内容：
@@ -345,6 +345,98 @@ result.json
 元のrunは変更せず、`outputs/replays/replay_<UUID>/` に画像とreplay.jsonを保存します。
 画素不一致は終了コード1、実行環境の差やPNGバイト列の一致は別項目で報告します。
 詳細と検証結果は [段階3の実装記録](docs/task03_stage3.md) を参照してください。
+
+### 段階3追加：GPTによるROI提案と目視確認
+
+`--auto-roi` を指定すると、設定したVLMへ対象領域だけを問い合わせてから、
+Pythonが座標を検証し、元解像度から切り出します。Readerは別のリクエストで読みます。
+既存の手動ROI・画像全体の処理は引き続き使用できます。Plannerの実装は段階4です。
+旧 `meter_agent.py` のROI・数値同時推定は呼び出しません。
+
+まずROIだけを取得して、枠を目視確認する手順を勧めます。
+以下は**実APIを呼ぶコマンド**です。クラウドでの検証では実行していません。
+新CLIは.envを自動読込しないため、手元のAPIキーを環境変数へ読み込みます。
+
+```bash
+uv sync --locked
+set -a
+source .env
+set +a
+
+roi_result_path=$(uv run --locked python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode inference \
+  --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY \
+  --auto-roi --roi-only \
+  --target-type analog \
+  --observation-id measurebench_pressure_gauge_104 \
+  --question "Read the tire pressure gauge using the psi scale.")
+
+roi_run_dir=$(dirname "$roi_result_path")
+echo "$roi_run_dir"
+# macOSで提案枠を表示します。
+open "$roi_run_dir/roi_preview.png"
+```
+
+`roi_preview.png` の緑枠に、文字盤全体・針先・目盛・単位が収まるか確認します。
+`roi.png` が実際の切り出し画像です。枠・注釈はReaderの画像に混ぜません。
+対象が曖昧／見つからない場合は `roi.png` を生成せず、`needs_review` と理由を保存します。
+技術エラーは結果を保存して終了コード1になります。確認前にJSONの `roi_proposal.status`
+も確認してください。`--roi-only` は測定値を読みません。
+
+確認後、保存した提案を使って切り出し・固定補正・読取を行います。
+ROI用のAPIを再び呼ばず、質問文・計器種別・観測IDは提案から引き継ぎます。
+
+```bash
+roi_read_result_path=$(uv run --locked python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode inference \
+  --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY \
+  --roi-proposal "$roi_run_dir/roi_proposal.json" \
+  --recipes resize_gamma clahe_mild)
+
+uv run --locked --offline python src/replay_corrections.py "$roi_read_result_path"
+```
+
+枠を修正する場合は、上の再利用コマンドに `--roi X1 Y1 X2 Y2` を追加します。
+EXIF補正後の元画像座標・右下を含まない区間です。元の提案と過去runは保持し、
+新runの `roi` に修正座標、`roi_source=manual_override` を保存します。
+曖昧だった提案にも手動座標を指定できます。手動指定は読取値の確認済み扱いにはしません。
+提案の再利用では入力ハッシュ・補正後画素・画像サイズ・質問・計器種別・座標変換を検証し、
+別画像や別対象への誤適用を拒否します。入力のファイル名変更だけでは拒否しません。
+
+一度に提案から読取まで実行する場合は、最初のコマンドから `--roi-only` を外し、
+必要なら `--recipes resize_gamma clahe_mild` を追加してください。
+この場合はROI提案1回＋未補正／2補正の読取3回が通常の構成で、
+再試行を含め**観測run全体で最大6送信・120秒**を共有します。
+設定の `max_api_calls` は各リクエストの最大試行数、`max_observation_api_calls` は
+ROIと全Reader共通の最大送信数（1〜6、既定6）です。上限到達時は未実施の処理も記録します。
+料金枠は同一CLIバッチ内で共有し、未設定の料金を0として記録しません。
+上の目視確認を挟む2コマンドは別runで、それぞれに回数・期限・費用枠が適用されます。
+再利用結果の `roi_proposal.inference` は過去の提案時の通信記録であり、
+最上位の `api_calls` は今回の送信だけを数えます。
+
+追加の保存内容は `roi_locator_input.png`（GPTへ渡した画像）、`roi_proposal.json`
+（提案座標・応答・モデル・プロンプト版・使用量）、`roi_preview.png`（確認用の枠）です。
+GPTへの入力はEXIF補正後の全体画像を長辺1600画素以下へLanczos縮小したものです。
+提案座標を検証後、各辺の実倍率で元画像へ戻し、左上は切捨て・右下は切上げます。
+元画像を変更せず、全補正候補には同じ切り出しROIを使います。
+この段階ではROI提案も測定値も自動承認しません。
+
+```bash
+# APIキー不要・実API通信なしの自動テスト
+uv run --locked --offline python -m unittest discover -s tests -v
+
+# 保存済み提案があれば、再利用と補正だけをAPIなしで確認できます。
+uv run --locked --offline python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode mock --roi-proposal "$roi_run_dir/roi_proposal.json" \
+  --recipes resize_gamma clahe_mild
+```
+
+詳細と検証範囲は [ROI提案の実装記録](docs/task03a_vlm_roi.md) を参照してください。
 
 ### 1枚をAIで判定して読み取る
 

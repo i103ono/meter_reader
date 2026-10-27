@@ -43,6 +43,7 @@ class ProviderConfig(Contract):
     deadline_seconds: float = Field(default=120, gt=0, le=120, allow_inf_nan=False)
     max_output_tokens: StrictInt = Field(default=2048, ge=128, le=8192)
     max_api_calls: StrictInt = Field(default=2, ge=1, le=2)
+    max_observation_api_calls: StrictInt = Field(default=6, ge=1, le=6)
     pricing: TokenPricing | None = None
     max_cost_usd: Decimal | None = Field(default=None, gt=0, allow_inf_nan=False)
 
@@ -149,6 +150,18 @@ class OpenAIProvider:
         self.transport = transport or http_post
         self.clock, self.sleep = clock, sleep
         self.budget = CostBudget(config)
+        self.observation_deadline: float | None = None
+        self.observation_api_calls = 0
+
+    def begin_observation(self) -> None:
+        self.observation_deadline = self.clock() + self.config.deadline_seconds
+        self.observation_api_calls = 0
+
+    def check_observation_budget(self) -> None:
+        if self.observation_deadline is not None and self.clock() >= self.observation_deadline:
+            raise ReaderError("Observation deadline reached.", code="deadline_exceeded")
+        if self.observation_api_calls >= self.config.max_observation_api_calls:
+            raise ReaderError("Observation API call limit reached.", code="observation_api_call_limit")
 
     def credential(self) -> str:
         value = os.environ.get(self.config.api_key_env)
@@ -160,11 +173,14 @@ class OpenAIProvider:
         return value
 
     def generate(self, payload: dict, attempts: list[InferenceAttempt], deadline: float) -> str:
+        if self.observation_deadline is not None:
+            deadline = min(deadline, self.observation_deadline)
         key = self.credential()
         for number in range(1, self.config.max_api_calls + 1):
             remaining = deadline - self.clock()
             if remaining <= 0:
                 raise ReaderError("Reader deadline reached before API request.", code="deadline_exceeded")
+            self.check_observation_budget()
             reserved = self.budget.reserve()
             request = urllib.request.Request(
                 self.endpoint, data=json.dumps(payload, allow_nan=False).encode(),
@@ -172,6 +188,7 @@ class OpenAIProvider:
                 method="POST",
             )
             started = self.clock()
+            self.observation_api_calls += 1
             try:
                 response = self.transport(request, min(self.config.timeout_seconds, remaining))
             except TransportFailure as exc:

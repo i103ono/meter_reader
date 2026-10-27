@@ -46,6 +46,13 @@ def parse_args(argv=None):
     roi.add_argument("--roi", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"))
     roi.add_argument("--legacy-roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"),
                      help="Explicitly convert the legacy xywh ROI to new xyxy coordinates")
+    proposal = parser.add_mutually_exclusive_group()
+    proposal.add_argument("--auto-roi", action="store_true",
+                          help="Ask the configured VLM to locate the target before independent reads")
+    proposal.add_argument("--roi-proposal", type=Path,
+                          help="Reuse roi_proposal.json for the same image/target, without another locator call")
+    parser.add_argument("--roi-only", action="store_true",
+                        help="Save the ROI proposal, crop and review preview without calling the Reader")
     parser.add_argument("--target-type", choices=("auto", "analog", "digital"))
     parser.add_argument("--meter-id")
     parser.add_argument("--observation-id")
@@ -65,13 +72,19 @@ def parse_args(argv=None):
         parser.error("provide exactly one image path or --inputs")
     if args.inputs and any(value is not None for value in (
         args.roi, args.legacy_roi, args.target_type, args.meter_id,
-        args.observation_id, args.captured_at, args.question,
+        args.observation_id, args.captured_at, args.question, args.roi_proposal,
     )):
         parser.error("with --inputs, set per-image options in JSONL instead of CLI overrides")
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
     if args.mode == "mock" and any((args.provider_config, args.model, args.api_key_env)):
         parser.error("provider/model/credential settings require --mode inference")
+    if args.auto_roi and args.mode != "inference":
+        parser.error("--auto-roi requires --mode inference; mock mode never calls a locator API")
+    if args.auto_roi and (args.roi is not None or args.legacy_roi is not None):
+        parser.error("--auto-roi cannot be combined with manual ROI coordinates")
+    if args.roi_only and (not (args.auto_roi or args.roi_proposal) or args.recipes is not None):
+        parser.error("--roi-only requires --auto-roi or --roi-proposal, without --recipes")
     return args
 
 
@@ -94,21 +107,33 @@ def configured_reader(args):
 def main(argv=None) -> int:
     args = parse_args(argv)
     try:
+        proposal = None
+        if args.roi_proposal:
+            from roi_locator import load_proposal
+            proposal = load_proposal(args.roi_proposal)
         if args.inputs:
             requests = load_inputs(args.inputs)
         else:
             roi = xywh_to_xyxy(args.legacy_roi) if args.legacy_roi is not None else args.roi
             requests = [ObservationInput(
-                image_path=args.image, roi=roi, target_type=args.target_type or "auto",
+                image_path=args.image, roi=roi,
+                target_type=args.target_type or (proposal.target_type if proposal else "auto"),
                 meter_id=args.meter_id, observation_id=args.observation_id,
-                captured_at=args.captured_at, question=args.question,
+                captured_at=args.captured_at,
+                question=args.question if args.question is not None else (proposal.question if proposal else None),
             )]
         if args.limit is not None:
             requests = requests[:args.limit]
         if args.recipes is not None:
             from tools import validate_recipes
             validate_recipes(args.recipes)
+        if args.auto_roi and any(request.roi is not None for request in requests):
+            raise ValueError("--auto-roi cannot override a manual ROI in an input manifest")
         reader = configured_reader(args)
+        locator = None
+        if args.auto_roi:
+            from roi_locator import ROILocator
+            locator = ROILocator(reader.provider)
     except ValidationError as exc:
         # A mistakenly supplied secret field must not be echoed by validation errors.
         locations = ["/".join(map(str, item["loc"])) for item in exc.errors(include_input=False)]
@@ -123,6 +148,8 @@ def main(argv=None) -> int:
             result = run_observation(
                 request, reader, args.output_dir, exif_timezone=args.exif_timezone,
                 recipes=tuple(args.recipes or ()),
+                roi_locator=locator, roi_proposal=proposal, roi_only=args.roi_only,
+                roi_proposal_reference=str(args.roi_proposal.expanduser().resolve()) if args.roi_proposal else None,
             )
             saved += 1
             print(result, flush=True)

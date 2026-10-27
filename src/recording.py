@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from image_io import ImageLoadError, prepare_image, save_png_exclusive, validate_roi_xyxy
 from reader import Reader, ReaderError, ReaderInput
-from schemas import CandidateResult, InferenceTrace, ObservationInput, ReaderOutput, ROIProposal, RunResult, SourceImage
+from schemas import InferenceTrace, ObservationInput, ReaderOutput, ROIProposal, RunResult, SourceImage
 from timestamps import resolve_capture_time
 
 
@@ -43,62 +43,13 @@ def _read_asset(reader: Reader, path: Path, request: ObservationInput) -> dict:
 
 
 def _candidates(reader, request, run_dir, recipe_ids, baseline):
-    from PIL import Image
-    from quality import measure_quality
-    from tools import CorrectionError, apply_recipe, pixel_sha256, recipe_steps, runtime_versions
-    roi_path = run_dir / "roi.png"
-    roi_hash = hashlib.sha256(roi_path.read_bytes()).hexdigest()
-    runtime = runtime_versions()
-    with Image.open(roi_path) as roi_image:
-        roi_image.load()
-        candidates = [CandidateResult(
-            candidate_id="c0", parent_candidate_id=None, recipe_id=None, runtime=runtime,
-            input_roi_sha256=roi_hash, image_path="roi.png", image_sha256=roi_hash,
-            pixel_sha256=pixel_sha256(roi_image), image_size=roi_image.size, image_mode=roi_image.mode,
-            quality=measure_quality(roi_image), status=baseline["status"], reading=baseline["reading"],
-            inference=baseline["inference"], api_calls=baseline["api_calls"], error=baseline["error"],
-            error_code=baseline["reasons"][0] if baseline["status"] == "error" else None,
-        )]
-        (run_dir / "candidates").mkdir()
-        for index, recipe_id in enumerate(recipe_ids, 1):
-            candidate_id = f"c{index}"
-            steps = recipe_steps(recipe_id, roi_image.size)
-            path = run_dir / "candidates" / f"{candidate_id}_{recipe_id}.png"
-            try:
-                check_budget = getattr(reader, "check_observation_budget", None)
-                if check_budget is not None:
-                    check_budget()
-                correction = apply_recipe(roi_image, recipe_id)
-                try:
-                    save_png_exclusive(correction.image, path)
-                    image_info = {
-                        "image_path": str(path.relative_to(run_dir)), "image_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                        "pixel_sha256": pixel_sha256(correction.image), "image_size": correction.image.size,
-                        "image_mode": correction.image.mode, "quality": measure_quality(correction.image),
-                    }
-                finally:
-                    correction.image.close()
-            except (CorrectionError, OSError, ReaderError) as exc:
-                candidates.append(CandidateResult(
-                    candidate_id=candidate_id, parent_candidate_id="c0", recipe_id=recipe_id,
-                    steps=steps, runtime=runtime, input_roi_sha256=roi_hash,
-                    image_path=None, image_sha256=None, pixel_sha256=None, image_size=None,
-                    image_mode=None, quality=None, status="error", reading=None, inference=None,
-                    api_calls=0, error_code=exc.code if isinstance(exc, ReaderError) else "correction_error",
-                    error=str(exc),
-                ))
-                continue
-            observation = _read_asset(reader, path, request)
-            candidates.append(CandidateResult(
-                candidate_id=candidate_id, parent_candidate_id="c0", recipe_id=recipe_id,
-                steps=steps, runtime=runtime, input_roi_sha256=roi_hash, **image_info,
-                status=observation["status"], reading=observation["reading"],
-                inference=observation["inference"], api_calls=observation["api_calls"],
-                error=observation["error"],
-                error_code=observation["reasons"][0] if observation["status"] == "error" else None,
-            ))
-    if hashlib.sha256(roi_path.read_bytes()).hexdigest() != roi_hash:
-        raise ImageLoadError("Original ROI changed during candidate processing")
+    from candidate_io import CandidateExecutor
+    executor = CandidateExecutor(run_dir, lambda path: _read_asset(reader, path, request),
+                                 getattr(reader, "check_observation_budget", lambda: None))
+    candidates = [executor.baseline(baseline)]
+    for index, recipe_id in enumerate(recipe_ids, 1):
+        candidates.append(executor.apply(recipe_id, index))
+    executor.verify()
     return candidates
 
 
@@ -113,12 +64,24 @@ def run_observation(
     roi_proposal: ROIProposal | None = None,
     roi_proposal_reference: str | None = None,
     roi_only: bool = False,
+    planner=None,
+    comparator=None,
 ) -> Path:
     if not isinstance(recipes, (list, tuple)):
         raise ValueError("recipes must be a list of registered recipe IDs")
     if recipes:
         from tools import validate_recipes
         recipes = validate_recipes(recipes)
+    if planner is not None:
+        from validator import comparison_policy
+        comparison_policy(request)
+        if recipes or roi_only or comparator is None:
+            raise ValueError("Agent requires a comparator and cannot use fixed recipes or ROI-only mode")
+        for client in (planner, comparator):
+            if client.mode != reader.mode or (reader.mode == "inference" and (
+                getattr(reader, "provider", None) is None or getattr(client, "provider", None) is not reader.provider
+            )):
+                raise ValueError("Planner, comparator and Reader must share one mode/provider/budget")
     if roi_locator is not None and (roi_proposal is not None or request.roi is not None):
         raise ValueError("Automatic ROI cannot be combined with a saved proposal or manual ROI")
     if roi_locator is not None and (
@@ -178,6 +141,7 @@ def run_observation(
             with prepared.image.crop(roi or (0, 0, *prepared.image.size)) as crop:
                 save_png_exclusive(crop, run_dir / "roi.png")
         reading, trace, error, candidates = None, None, None, []
+        agent_trace, selected, next_action = None, None, "human_review"
         status, reasons, api_calls = "needs_review", [], roi_calls
         if not roi_ready:
             reasons = ["roi_" + roi_proposal.status, "reading_skipped_roi_unresolved"]
@@ -193,9 +157,20 @@ def run_observation(
             reading, status, reasons, error, trace = (
                 baseline[key] for key in ("reading", "status", "reasons", "error", "inference")
             )
-            candidates = _candidates(reader, request, run_dir, recipes, baseline) if recipes else []
-            api_calls = baseline["api_calls"] + roi_calls if baseline["api_calls"] is not None else None
-        if candidates:
+            if planner is not None:
+                from agent import run_agent
+                from candidate_io import CandidateExecutor
+                executor = CandidateExecutor(run_dir, lambda path: _read_asset(reader, path, request),
+                                             getattr(reader, "check_observation_budget", lambda: None))
+                outcome = run_agent(request, reader, planner, comparator, run_dir, baseline, executor)
+                candidates, agent_trace = outcome.candidates, outcome.trace
+                status, reasons, error = outcome.status, outcome.reasons, outcome.error
+                selected, next_action = outcome.selected_candidate_id, outcome.next_action
+                api_calls = outcome.api_calls + roi_calls if outcome.api_calls is not None else None
+            else:
+                candidates = _candidates(reader, request, run_dir, recipes, baseline) if recipes else []
+                api_calls = baseline["api_calls"] + roi_calls if baseline["api_calls"] is not None else None
+        if candidates and planner is None:
             counts = [candidate.api_calls for candidate in candidates]
             api_calls = roi_calls + sum(counts) if all(count is not None for count in counts) else None
             reasons = [*reasons, "fixed_candidates_not_selected"]
@@ -210,11 +185,16 @@ def run_observation(
                 status = "needs_review"
         if roi_proposal is not None:
             reasons = [*reasons, "roi_manually_overridden" if roi_source == "manual_override" else "roi_proposal_unverified"]
+        if planner is not None and agent_trace is None:
+            from schemas import AgentEvent, AgentTrace
+            agent_trace = AgentTrace(planner_id=planner.planner_id, stop_reason="roi_unresolved", comparisons=[],
+                                     events=[AgentEvent(role="planner", turn=1, status="skipped",
+                                                        reason_codes=["roi_unresolved"])])
         # Detect a source modified during the run; it must never be silently accepted.
         if hashlib.sha256(prepared.original_path.read_bytes()).hexdigest() != prepared.sha256:
             raise ImageLoadError("Input image changed during processing")
         result = RunResult(
-            stage=3 if recipes else getattr(reader, "stage", 1),
+            stage=4 if planner is not None else (3 if recipes else getattr(reader, "stage", 1)),
             run_id=run_id, observation_id=observation_id, meter_id=request.meter_id,
             captured_at=capture.captured_at, captured_timezone=capture.timezone,
             timestamp_source=capture.source, timestamp_metadata=capture.metadata,
@@ -234,7 +214,8 @@ def run_observation(
             reading=reading, reason_codes=reasons,
             api_calls=api_calls,
             error=error, inference=trace,
-            baseline_candidate_id="c0" if recipes else None,
+            baseline_candidate_id="c0" if candidates else None,
+            selected_candidate_id=selected, next_action=next_action, agent=agent_trace,
             correction_candidates_generated=sum(candidate.image_path is not None for candidate in candidates[1:]),
             candidates=candidates,
         )

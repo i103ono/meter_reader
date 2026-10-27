@@ -119,14 +119,19 @@ class CostBudget:
         self.config = config
         self.reserved = Decimal(0)
 
-    def reserve(self) -> Decimal | None:
+    def check(self) -> Decimal | None:
         prices = self.config.pricing
         if prices is None:
             return None
         amount = prices.cost(prices.max_input_tokens_per_call, self.config.max_output_tokens)
         if self.config.max_cost_usd is not None and self.reserved + amount > self.config.max_cost_usd:
             raise ReaderError("Configured batch cost limit reached before API request.", code="cost_budget_exceeded")
-        self.reserved += amount
+        return amount
+
+    def reserve(self) -> Decimal | None:
+        amount = self.check()
+        if amount is not None:
+            self.reserved += amount
         return amount
 
     def settle(self, reserved: Decimal | None, usage: TokenUsage) -> None:
@@ -162,6 +167,7 @@ class OpenAIProvider:
             raise ReaderError("Observation deadline reached.", code="deadline_exceeded")
         if self.observation_api_calls >= self.config.max_observation_api_calls:
             raise ReaderError("Observation API call limit reached.", code="observation_api_call_limit")
+        self.budget.check()
 
     def credential(self) -> str:
         value = os.environ.get(self.config.api_key_env)

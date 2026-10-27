@@ -32,8 +32,8 @@ def replay(result_path: Path, output_dir: Path = Path("outputs/replays")) -> Pat
     result_path = result_path.expanduser().resolve()
     original_document = result_path.read_bytes()
     result = RunResult.model_validate_json(original_document)
-    if result.stage != 3 or not result.candidates or result.baseline_candidate_id != "c0":
-        raise ValueError("Replay requires a stage-3 result with an original ROI")
+    if result.stage not in (3, 4) or not result.candidates or result.baseline_candidate_id != "c0":
+        raise ValueError("Replay requires a stage-3/4 result with an original ROI")
     baseline, *corrected = result.candidates
     if (baseline.candidate_id != "c0" or baseline.recipe_id is not None
             or baseline.parent_candidate_id is not None or baseline.image_path is None):

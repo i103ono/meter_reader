@@ -1,7 +1,8 @@
-"""Validated contracts for specification v0.2, stages 1 through 3 and ROI proposals."""
+"""Validated contracts for specification v0.2, stages 1 through 4 and ROI proposals."""
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -309,9 +310,80 @@ class CandidateResult(Contract):
     error: StrictStr | None = None
 
 
+class ComparisonPolicy(Contract):
+    """Comparison tolerance only. This never enables automatic acceptance."""
+    analog_absolute_tolerance: Decimal = Field(ge=0, allow_inf_nan=False)
+    unit: StrictStr = Field(min_length=1)
+
+    @field_validator("unit")
+    @classmethod
+    def nonblank(cls, value):
+        if not value.strip():
+            raise ValueError("comparison unit must not be blank")
+        return value
+
+
+class PlannerOutput(Contract):
+    action: Literal["apply", "stop", "recommend_recapture"]
+    recipe_id: RecipeId | None
+    reason: StrictStr = Field(min_length=1)
+    reason_codes: list[StrictStr]
+
+    @model_validator(mode="after")
+    def coherent_action(self):
+        if (self.action == "apply") != (self.recipe_id is not None):
+            raise ValueError("only apply requires a recipe ID")
+        if not self.reason.strip():
+            raise ValueError("planner reason must not be blank")
+        return self
+
+
+class ComparisonOutput(Contract):
+    supported_candidate_id: Identifier | None
+    readable: StrictBool
+    contradictions: list[StrictStr]
+    reason: StrictStr = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def coherent_support(self):
+        if self.supported_candidate_id is not None and (not self.readable or self.contradictions):
+            raise ValueError("support requires readability and no contradictions")
+        if not self.reason.strip():
+            raise ValueError("comparison reason must not be blank")
+        return self
+
+
+class AgentEvent(Contract):
+    role: Literal["planner", "correction", "comparison"]
+    turn: Annotated[StrictInt, Field(ge=1, le=2)]
+    candidate_id: Identifier | None = None
+    status: Literal["completed", "error", "skipped"]
+    decision: PlannerOutput | None = None
+    comparison: ComparisonOutput | None = None
+    inference: InferenceTrace | None = None
+    api_calls: Annotated[StrictInt, Field(ge=0)] | None = 0
+    reason_codes: list[StrictStr] = Field(default_factory=list)
+    error_code: StrictStr | None = None
+    error: StrictStr | None = None
+
+
+class ReadingComparison(Contract):
+    candidate_ids: tuple[Identifier, Identifier]
+    conflicts: list[StrictStr]
+
+
+class AgentTrace(Contract):
+    version: Literal["meter-agent-v1"] = "meter-agent-v1"
+    planner_id: StrictStr
+    stop_reason: StrictStr
+    events: list[AgentEvent]
+    comparisons: list[ReadingComparison]
+    comparison_policy: ComparisonPolicy | None = None
+
+
 class RunResult(Contract):
     schema_version: Literal["0.2"] = "0.2"
-    stage: Literal[1, 2, 3] = 1
+    stage: Literal[1, 2, 3, 4] = 1
     run_id: Identifier
     observation_id: Identifier
     meter_id: Identifier | None
@@ -342,11 +414,12 @@ class RunResult(Contract):
     effective_unit: None = None
     review_status: Literal["unreviewed"] = "unreviewed"
     reason_codes: list[StrictStr]
-    next_action: Literal["human_review"] = "human_review"
+    next_action: Literal["human_review", "recapture"] = "human_review"
     api_calls: Annotated[StrictInt, Field(ge=0)] | None
     error: StrictStr | None = None
     inference: InferenceTrace | None = None
     baseline_candidate_id: Literal["c0"] | None = None
-    selected_candidate_id: None = None
+    selected_candidate_id: Identifier | None = None
     correction_candidates_generated: StrictInt = Field(default=0, ge=0)
     candidates: list[CandidateResult] = Field(default_factory=list)
+    agent: AgentTrace | None = None

@@ -49,7 +49,7 @@ class StructuredImageClient:
         self.provider.check_observation_budget()
 
     def request(self, image_path, *, instructions, prompt_version, schema, schema_name,
-                target_data, parse):
+                target_data, parse, additional_images=()):
         provider, config = self.provider, self.provider.config
         started = provider.clock()
         attempts = []
@@ -57,6 +57,14 @@ class StructuredImageClient:
         with Image.open(image_path) as image:
             width, height = image.size
         try:
+            content = [
+                {"type": "input_text", "text": json.dumps(target_data, ensure_ascii=False)},
+            ]
+            for path in (image_path, *additional_images):
+                content.append({
+                    "type": "input_image", "detail": config.image_detail,
+                    "image_url": "data:image/png;base64," + base64.b64encode(path.read_bytes()).decode("ascii"),
+                })
             payload = {
                 "model": config.model, "instructions": instructions,
                 "store": False, "truncation": "disabled",
@@ -65,11 +73,7 @@ class StructuredImageClient:
                     "type": "json_schema", "name": schema_name,
                     "strict": True, "schema": schema,
                 }},
-                "input": [{"role": "user", "content": [
-                    {"type": "input_text", "text": json.dumps(target_data, ensure_ascii=False)},
-                    {"type": "input_image", "detail": config.image_detail,
-                     "image_url": "data:image/png;base64," + base64.b64encode(image_path.read_bytes()).decode("ascii")},
-                ]}],
+                "input": [{"role": "user", "content": content}],
             }
             raw = provider.generate(payload, attempts, started + config.deadline_seconds)
             return parse(raw)

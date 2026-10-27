@@ -438,6 +438,86 @@ uv run --locked --offline python src/cli.py \
 
 詳細と検証範囲は [ROI提案の実装記録](docs/task03a_vlm_roi.md) を参照してください。
 
+### 仕様v0.2・段階4：Plannerによる補正選択
+
+`--agent` で、未補正ROIのReader → Planner → 補正 → 独立Readerを実行します。
+Plannerは登録済みの未試行レシピ1つ、終了、再撮影推奨のいずれかを選び、補正は最大2候補です。
+`--recipes` との同時指定はできません。指定しなければ従来の固定補正・ROI処理を維持します。
+
+APIキーなし・外部通信なしで流れを確認できます。MockPlannerのレシピ選択は固定された
+動作確認用で、画像を判断した結果ではありません。MockReaderの値・単位も不明のままです。
+
+```bash
+uv run --locked --offline python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode mock --agent
+
+uv run --locked --offline python -m unittest discover -s tests -v
+```
+
+次は実APIを使う例です。先のROI確認で設定した `roi_run_dir` を使い、
+保存済み `roi_proposal.json` を再利用します。新しいROIのAPI呼出しは行いません。
+新CLIは.envを自動読込しないため、キーを環境へ読み込んでから実行します。
+
+```bash
+set -a
+source .env
+set +a
+
+agent_result_path=$(uv run --locked python src/cli.py \
+  data/dev_external/measurebench/images/pressure_gauge_104_045c9dd6.jpg \
+  --mode inference --agent \
+  --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY \
+  --roi-proposal "$roi_run_dir/roi_proposal.json")
+
+echo "$agent_result_path"
+```
+
+手動の `--roi`、`--inputs` の入力専用JSONL、`--auto-roi` も併用できます。
+ROI提案・Reader・Planner・最終比較のすべてで**最大6送信・120秒**と料金枠を共有します。
+ROIを新規提案すると残りの送信枠が減るため、確認済み提案の再利用を勧めます。
+最終比較が必要でも予算がなければ実行せず、`needs_review` と未実施の理由を保存します。
+
+Reader同士の値・単位・目盛に矛盾があれば、追加の候補や多数決で解消せず停止します。
+補正候補だけが読めた場合は、残予算があれば元ROIとその候補を並べた最終比較を1回行います。
+最終比較は既存候補IDの支持・読取可否・矛盾だけを返し、新しい数値の出力を拒否します。
+
+アナログの許容差は未設定が既定です。食い違う値を同一とみなしたい場合だけ、
+`--comparison-policy <JSONファイル>` へ、対象単位に合わせた設定を指定します。
+例えば `{"analog_absolute_tolerance":"0.02","unit":"MPa"}` です。
+入力JSONLでは `acceptance_policy.comparison` に同じオブジェクトを置けます。
+許容差は同じ単位のアナログ値にだけ適用し、Pa↔MPa等の換算はしません。
+これは候補間の一致判定だけであり、自動採用基準の校正を済ませた扱いにはしません。
+
+`result.json` の主な確認箇所：
+
+| フィールド | 内容 |
+|---|---|
+| stage | 4 |
+| candidates | 未補正c0と最大2候補。画像・処理・独立した読取・通信記録 |
+| agent.events | Planner指示、補正の完了／失敗／未実施、最終比較と各通信記録 |
+| agent.stop_reason | 終了・再撮影・候補上限・不一致・API／予算上限等の停止理由 |
+| agent.comparisons | 候補間の値・単位・目盛等の矛盾 |
+| selected_candidate_id | 要確認の表示候補ID、またはnull。運用上の採用値ではない |
+| next_action | human_review または recapture |
+| api_calls | 今回の全役割の実際の送信数。過去の保存ROI提案分は含めない |
+
+最上位の `reading` / `inference` は従来どおり未補正c0の記録を維持します。
+表示候補の抽出値は `selected_candidate_id` に対応する `candidates[].reading` を参照してください。
+`auto_accept=false`、`effective_value=null`、`effective_unit=null` のままです。
+同じVLMによる一致や最終比較だけで、正解や精度改善を証明したことにはしません。
+
+技術エラー・無効な指示があればCLIは結果を保存して終了コード1、
+通常の停止・再撮影推奨・矛盾・予算上限による要確認は終了コード0です。
+終了コード0でも読取成功とは限らないため、`status` と `reason_codes` を確認してください。
+補正候補が正常に生成されていれば、段階3と同じ `src/replay_corrections.py` で
+API・Plannerなしに再生成できます。候補なし、または未生成候補を含むrunの再生成は拒否します。
+
+今回の検証は140自動テストと公開開発画像20枚の通信モックです。
+実APIでのPlannerの判断・読取精度・費用は未検証です。
+詳細は [段階4の実装記録](docs/task04_stage4.md) を参照してください。
+
 ### 1枚をAIで判定して読み取る
 
 入力画像には、原則として計器を1台だけ写してください。

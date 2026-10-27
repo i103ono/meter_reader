@@ -66,13 +66,17 @@ def parse_args(argv=None):
     parser.add_argument("--limit", type=int, help="Process at most N records")
     parser.add_argument("--recipes", nargs="+", metavar="RECIPE",
                         help="Generate up to two registered fixed corrections from the original ROI")
+    parser.add_argument("--agent", action="store_true",
+                        help="Let a bounded Planner choose at most two corrections (mock mode stays offline)")
+    parser.add_argument("--comparison-policy", type=Path,
+                        help="JSON containing analog_absolute_tolerance and unit; comparison only, no automatic acceptance")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/runs"))
     args = parser.parse_args(argv)
     if (args.image is None) == (args.inputs is None):
         parser.error("provide exactly one image path or --inputs")
     if args.inputs and any(value is not None for value in (
         args.roi, args.legacy_roi, args.target_type, args.meter_id,
-        args.observation_id, args.captured_at, args.question, args.roi_proposal,
+        args.observation_id, args.captured_at, args.question, args.roi_proposal, args.comparison_policy,
     )):
         parser.error("with --inputs, set per-image options in JSONL instead of CLI overrides")
     if args.limit is not None and args.limit <= 0:
@@ -85,6 +89,10 @@ def parse_args(argv=None):
         parser.error("--auto-roi cannot be combined with manual ROI coordinates")
     if args.roi_only and (not (args.auto_roi or args.roi_proposal) or args.recipes is not None):
         parser.error("--roi-only requires --auto-roi or --roi-proposal, without --recipes")
+    if args.agent and (args.recipes is not None or args.roi_only):
+        parser.error("--agent cannot be combined with --recipes or --roi-only")
+    if args.comparison_policy is not None and not args.agent:
+        parser.error("--comparison-policy requires --agent")
     return args
 
 
@@ -107,6 +115,10 @@ def configured_reader(args):
 def main(argv=None) -> int:
     args = parse_args(argv)
     try:
+        policy = None
+        if args.comparison_policy:
+            from schemas import ComparisonPolicy
+            policy = ComparisonPolicy.model_validate_json(args.comparison_policy.read_bytes())
         proposal = None
         if args.roi_proposal:
             from roi_locator import load_proposal
@@ -121,6 +133,7 @@ def main(argv=None) -> int:
                 meter_id=args.meter_id, observation_id=args.observation_id,
                 captured_at=args.captured_at,
                 question=args.question if args.question is not None else (proposal.question if proposal else None),
+                acceptance_policy={"comparison": policy.model_dump(mode="json")} if policy else None,
             )]
         if args.limit is not None:
             requests = requests[:args.limit]
@@ -129,7 +142,18 @@ def main(argv=None) -> int:
             validate_recipes(args.recipes)
         if args.auto_roi and any(request.roi is not None for request in requests):
             raise ValueError("--auto-roi cannot override a manual ROI in an input manifest")
+        if args.agent:
+            from validator import comparison_policy
+            for request in requests:
+                comparison_policy(request)
         reader = configured_reader(args)
+        planner, comparator = None, None
+        if args.agent:
+            from planner import MockPlanner, MockComparator, VLMPlanner, VLMComparator
+            if reader.mode == "mock":
+                planner, comparator = MockPlanner(), MockComparator()
+            else:
+                planner, comparator = VLMPlanner(reader.provider), VLMComparator(reader.provider)
         locator = None
         if args.auto_roi:
             from roi_locator import ROILocator
@@ -150,13 +174,22 @@ def main(argv=None) -> int:
                 recipes=tuple(args.recipes or ()),
                 roi_locator=locator, roi_proposal=proposal, roi_only=args.roi_only,
                 roi_proposal_reference=str(args.roi_proposal.expanduser().resolve()) if args.roi_proposal else None,
+                planner=planner, comparator=comparator,
             )
             saved += 1
             print(result, flush=True)
             saved_result = json.loads(result.read_text())
-            if saved_result["status"] == "error" or any(
-                candidate["status"] == "error" for candidate in saved_result.get("candidates", [])
-            ):
+            budget_codes = set()
+            if args.agent:
+                from agent import BUDGET_CODES
+                budget_codes = BUDGET_CODES
+            candidate_error = any(
+                candidate["status"] == "error" and (not args.agent or candidate.get("error_code") not in budget_codes)
+                for candidate in saved_result.get("candidates", [])
+            )
+            role_error = any(event["status"] == "error" and event.get("error_code") not in budget_codes
+                             for event in (saved_result.get("agent") or {}).get("events", []))
+            if saved_result["status"] == "error" or candidate_error or role_error:
                 failed += 1
         except (OSError, ValueError, ImageLoadError) as exc:
             failed += 1

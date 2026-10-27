@@ -218,53 +218,69 @@ def evaluate_experiment(experiment, labels_path):
             if document["mode"] == "mock":
                 for key in ("value_correct", "unit_correct", "both_correct", "absolute_distance_to_interval", "relative_error"):
                     score[key] = None
-            technical = result is None or bool(entry.get("error")) or technical_failure(result.model_dump(mode="json"))
+            roi_skip = entry.get("skip_reason") in ("roi_unresolved", "roi_error")
+            if roi_skip and (condition == "A" or result is not None or entry["roi"] is not None):
+                raise ValueError("ROI-unresolved skips require an unexecuted B-D condition")
+            technical = (result is None and not roi_skip) or bool(entry.get("error")) or (result is not None and technical_failure(result.model_dump(mode="json")))
+            totals = trace_totals(result)
+            if entry.get("interrupted_attempts", 0):
+                for key in totals:
+                    totals[key] = None  # A request may have reached the API before interruption.
             rows[condition].append({"case_id": case_id, "question_id": entry["question_id"], "technical_error": technical,
-                                    "status": result.status if result else "error", "missing_result": result is None,
+                                    "status": result.status if result else (entry["read_status"] if roi_skip else "error"),
+                                    "skip_reason": entry.get("skip_reason"), "missing_result": result is None and not roi_skip,
                                     "evaluation_candidate_id": entry.get("evaluation_candidate_id"),
                                     "abstained": reading is None or reading.value is None or reading.unit is None,
                                     "auto_accept": result.auto_accept if result else False,
                                     "raw_value_text": reading.raw_value_text if reading else None,
-                                    "wall_elapsed_ms": entry.get("wall_elapsed_ms"), **trace_totals(result), **score,
+                                    "wall_elapsed_ms": entry.get("wall_elapsed_ms"), "interrupted_attempts": entry.get("interrupted_attempts", 0), **totals, **score,
                                     "label": label})
     if len(signatures) > 1:
         raise ValueError("A-D Reader model, prompt, image detail and output settings must match")
-    summaries = {}
     simulated = document["mode"] == "mock"
-    for condition, items in rows.items():
-        n = len(items)
-        adopted = [row for row in items if row["auto_accept"]]
-        extracted = [row for row in items if not row["abstained"]]
-        review_candidates = [row for row in extracted if row["status"] == "needs_review"]
-        statuses = Counter(row["status"] for row in items)
-        def rate(field):
-            return None if simulated else sum(bool(row[field]) for row in items) / n
-        summaries[condition] = {
-            "n": n, "value_accuracy": rate("value_correct"), "unit_accuracy": rate("unit_correct"),
-            "combined_accuracy": rate("both_correct"), "auto_accept_rate": len(adopted) / n,
-            "auto_accept_error_rate": sum(not row["both_correct"] for row in adopted) / len(adopted) if adopted else None,
-            "statuses": dict(statuses), "unreadable_rate": statuses["unreadable"] / n,
-            "needs_review_rate": statuses["needs_review"] / n, "technical_error_rate": sum(row["technical_error"] for row in items) / n,
-            "missing_results": sum(row["missing_result"] for row in items),
-            "abstention_rate": sum(row["abstained"] for row in items) / n,
-            "extracted_candidates": sum(not row["abstained"] for row in items),
-            "extracted_candidate_accuracy": sum(row["both_correct"] for row in extracted) / len(extracted) if extracted and not simulated else None,
-            "needs_review_candidate_accuracy": sum(row["both_correct"] for row in review_candidates) / len(review_candidates) if review_candidates and not simulated else None,
-            "api_calls": sum(row["api_calls"] for row in items) if all(row["api_calls"] is not None for row in items) else None,
-        }
-        for field in ("input_tokens", "output_tokens", "wall_elapsed_ms", "api_elapsed_ms"):
-            values = [row[field] for row in items]
-            summaries[condition][field] = sum(values) if all(v is not None for v in values) else None
-        costs = [row["estimated_cost_usd"] for row in items]
-        summaries[condition]["estimated_cost_usd"] = str(sum(map(number, costs))) if all(c is not None for c in costs) else None
-        for field in ("absolute_distance_to_interval", "relative_error"):
-            values = [number(row[field]) for row in items if row[field] is not None]
-            summaries[condition]["mean_" + field] = str(sum(values) / len(values)) if values and not simulated else None
+    summaries = {name: summarize(items, simulated) for name, items in rows.items()}
+    categories = sorted({row["label"].get("image_type", "unknown") for items in rows.values() for row in items})
+    by_category = {category: {name: summarize([row for row in items if row["label"].get("image_type", "unknown") == category], simulated)
+                              for name, items in rows.items()} for category in categories}
     return {"version": "meter-evaluation-v1", "adapter": "local-closed-interval-v1",
             "official_evaluator_executed": False, "mode": document["mode"], "accuracy_evaluated": not simulated,
             "experiment_sha256": hashlib.sha256(experiment_bytes).hexdigest(),
             "labels_sha256": hashlib.sha256(labels_bytes).hexdigest(),
-            "fixed_recipe": document["fixed_recipe"], "summaries": summaries, "conditions": rows}
+            "fixed_recipe": document["fixed_recipe"], "roi_preparation": document.get("roi_preparation"),
+            "summaries": summaries, "by_category": by_category, "conditions": rows}
+
+
+def summarize(items, simulated=False):
+    n = len(items)
+    adopted = [row for row in items if row["auto_accept"]]
+    extracted = [row for row in items if not row["abstained"]]
+    review_candidates = [row for row in extracted if row["status"] == "needs_review"]
+    statuses = Counter(row["status"] for row in items)
+    def rate(field):
+        return None if simulated else sum(bool(row[field]) for row in items) / n
+    summary = {
+        "n": n, "value_accuracy": rate("value_correct"), "unit_accuracy": rate("unit_correct"),
+        "combined_accuracy": rate("both_correct"), "auto_accept_rate": len(adopted) / n,
+        "auto_accept_error_rate": sum(not row["both_correct"] for row in adopted) / len(adopted) if adopted else None,
+        "statuses": dict(statuses), "unreadable_rate": statuses["unreadable"] / n,
+        "needs_review_rate": statuses["needs_review"] / n, "technical_error_rate": sum(row["technical_error"] for row in items) / n,
+        "missing_results": sum(row["missing_result"] for row in items),
+        "abstention_rate": sum(row["abstained"] for row in items) / n,
+        "extracted_candidates": sum(not row["abstained"] for row in items),
+        "extracted_candidate_accuracy": sum(row["both_correct"] for row in extracted) / len(extracted) if extracted and not simulated else None,
+        "needs_review_candidate_accuracy": sum(row["both_correct"] for row in review_candidates) / len(review_candidates) if review_candidates and not simulated else None,
+        "api_calls": sum(row["api_calls"] for row in items) if all(row["api_calls"] is not None for row in items) else None,
+    }
+    for field in ("input_tokens", "output_tokens", "wall_elapsed_ms", "api_elapsed_ms"):
+        values = [row[field] for row in items]
+        summary[field] = sum(values) if all(v is not None for v in values) else None
+    costs = [row["estimated_cost_usd"] for row in items]
+    summary["estimated_cost_usd"] = str(sum(map(number, costs))) if all(c is not None for c in costs) else None
+    for field in ("absolute_distance_to_interval", "relative_error"):
+        values = [number(row[field]) for row in items if row[field] is not None]
+        summary["mean_" + field] = str(sum(values) / len(values)) if values and not simulated else None
+    summary["roi_skipped_cases"] = sum(row.get("skip_reason") in ("roi_unresolved", "roi_error") for row in items)
+    return summary
 
 
 def main(argv=None):
@@ -280,6 +296,8 @@ def main(argv=None):
         path = root / "evaluation.json"
         with path.open("x", encoding="utf-8") as handle:
             json.dump(report, handle, ensure_ascii=False, indent=2, allow_nan=False)
+        from evaluation_csv import write_csv_reports
+        write_csv_reports(report, root)
         print(path)
         return 0
     except (OSError, ValueError) as exc:

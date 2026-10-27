@@ -723,6 +723,89 @@ labels.jsonlと同じ取得スクリプトのlabels.csvにも対応します。
 全体画像ROI・MockReaderによる接続確認であり、数値の正解率やROIの効果は未評価です。
 詳しくは [段階5の実装記録](docs/task05_stage5.md) を参照してください。
 
+### 公開20枚をまとめてROI準備・A〜D評価する
+
+取得スクリプトの元の `inputs.jsonl`（filename/question_id/question）から、そのまま20枚を準備できます。
+正解は読み込まず、元の質問文・データセットrevision・seedを保持します。
+次のROI準備と比較実行は**実APIを使用**します。APIキーを読み込んでから実行してください。
+
+```bash
+set -a
+source .env
+set +a
+
+uv run --locked python src/batch_prepare.py \
+  --inputs data/dev_external/measurebench/inputs.jsonl \
+  --workspace outputs/batch20 \
+  --expect-count 20 --mode inference \
+  --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY
+
+open outputs/batch20/roi_contact_sheet.png
+```
+
+`roi_contact_sheet.png` で全20枚の提案枠と状態を確認できます。
+準備状態は `outputs/batch20/batch.json`、各ROIの詳細画像・応答は同じworkspaceの `roi_runs` に保存します。
+同じ準備コマンドを再実行しても確定済みROIは再取得しません。通信障害・未実施のケースは再開します。
+曖昧／不在も既定では再取得せず、再提案したい場合だけ `--retry-unresolved` を追加します。
+API認証の不備なら残りへ同じ失敗を繰り返さず終了し、未実施も状態に残します。
+入力・質問・画像ハッシュが変わった場合は既存workspaceへ混ぜず、新しいworkspaceを指定してください。
+
+修正が必要なROIは、例えば次のJSONを `outputs/batch20/roi_overrides.json` として作り、
+同じ準備コマンドへ `--overrides outputs/batch20/roi_overrides.json` を追加して適用します。
+値はEXIF補正後の元画像座標 `[x1,y1,x2,y2)` です。下の値はこれまで確認したpressure_gauge_104の例です。
+
+```json
+{"pressure_gauge_104": [668, 178, 913, 377]}
+```
+
+修正済み状態も保持され、元の提案・応答を上書きしません。
+ROI未確定のケースを除外せず、Aは全体画像で実行、B〜Dは要確認／技術エラーの未実施としてN=20に残します。
+未確定ROIを全体画像へ黙って置き換えません。ROI未確定を含む正解率と、抽出できた候補の正解率は別に表示します。
+
+確認後、固定レシピとモデルを揃えて全20枚を比較します。
+ROIのAPIは再度呼びません。stdoutには最後にexperiment.jsonのパス、進捗はstderrへ表示します。
+
+```bash
+experiment_path=$(uv run --locked python src/benchmark.py \
+  --prepared-batch outputs/batch20/batch.json \
+  --mode inference \
+  --provider-config examples/openai_gpt6_luna.json \
+  --api-key-env OPENAI_API_KEY \
+  --fixed-recipe resize_2x --allow-perspective \
+  --database outputs/history/batch20.sqlite3)
+
+evaluation_path=$(uv run --locked --offline python src/evaluation.py \
+  --experiment "$experiment_path" \
+  --labels data/dev_external/measurebench/labels.jsonl)
+
+open "$(dirname "$evaluation_path")/summary.csv"
+open "$(dirname "$evaluation_path")/cases.csv"
+```
+
+- `evaluation.json`：全体、計器種別別、各画像の詳細。
+- `summary.csv`：ALLと計器種別別のA〜D。正解率・棄権率・技術エラー率・ROI未確定件数・時間・通信回数。
+- `cases.csv`：20枚×4条件=80行。予測値・単位・正解区間・判定・未実施理由。
+
+CSVの正解率は0〜1の割合です。`combined_accuracy` は棄権も含めたN=20での値＋単位の正解率、
+`extracted_candidate_accuracy` は値・単位の候補を出せたケースだけの正解率です。
+Dで候補が選べないケースは棄権として残ります。区間の中央との差や、正解に近い候補の後選びは使いません。
+CSVのnullは空欄で、元のJSONではnullのままです。モデル等の文字列はExcelの式として解釈されない形で出力します。
+
+比較実行を中断した場合、開始時にstderrへ出た `Experiment: .../experiment.json` のパスを確認し、
+同じbenchmarkコマンドへ `--resume <そのexperiment.json>` を追加してください。
+完了済みの条件（技術エラーも含む）は再実行せず、未完了だけを続けます。
+モデル・Reader設定・固定レシピ・ROI・質問・入力・DB保存先の変更は拒否します。
+中断直前の通信が課金されたか不明な場合、そのケースの通信回数・使用量・費用合計をnullとして残します。
+古い版の実験には再開用メタデータがないため、この版で新規に始めた実験が対象です。
+
+ROI準備の通信回数は `evaluation.json.roi_preparation.api_calls` に別枠で残し、A〜Dの通信へ二重計上しません。
+ROI要求中に中断して送信の完了有無が不明なら合計はnull、記録できた分は `known_api_calls` に残します。
+ROI準備と比較実行、また再開したプロセスでは、それぞれ新たにCLIの費用枠を使います。
+前のプロセスの費用予約は引き継ぎません。料金設定がなければ金額は引き続きnullです。
+開発用20枚の集計であり、工場画像の最終性能評価にはしません。
+追加機能の検証は [20枚一括評価の記録](docs/task05a_batch20.md) を参照してください。
+
 ### 1枚をAIで判定して読み取る
 
 入力画像には、原則として計器を1台だけ写してください。
